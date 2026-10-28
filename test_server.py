@@ -16,6 +16,21 @@ assert server.extract_json('Đây:\n```json\n{"a": [1]}\n```') == {"a": [1]}
 doc = server.export_doc({"title": "<T>", "duration_min": 5, "questions": json.dumps(qs)}, True).decode()
 assert "&lt;T&gt;" in doc and "Đáp án" in doc and "B" in doc
 
+# đề mẫu được lưu và đưa vào prompt (thay Claude bằng hàm giả)
+import base64
+seen = {}
+def fake_claude(prompt, cwd):
+    seen["prompt"], seen["files"] = prompt, sorted(os.listdir(cwd))
+    return json.dumps({"title": "T", "lesson": "# L", "questions": qs[:1]})
+real_claude, server.ask_claude = server.ask_claude, fake_claude
+b64 = lambda s: base64.b64encode(s.encode()).decode()
+for mode in ("both", "exam"):
+    server.generate_exam([{"name": "a.txt", "data": b64("tài liệu")}], [{"name": "mau.pdf", "data": b64("%PDF")}], 5, "mcq", "", mode)
+    assert "de_mau_0.pdf" in seen["files"] and "de_mau_0.pdf" in seen["prompt"] and "bắt chước phong cách" in seen["prompt"], mode
+d = server.generate_exam([{"name": "a.txt", "data": b64("x")}], [], 5, "mcq", "", "lesson")
+assert d["questions"] == [] and "KHÔNG tạo câu hỏi" in seen["prompt"]
+server.ask_claude = real_claude
+
 # tài khoản + phân quyền qua HTTP
 httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -53,6 +68,17 @@ s, a, _ = call(f"/api/attempts/{r['id']}", cookie=alice)
 assert a["score"] == 10
 assert call(f"/api/attempts/{r['id']}", cookie=bob)[0] == 400
 assert len(call("/api/attempts", cookie=alice)[1]) == 1 and call("/api/attempts", cookie=bob)[1] == []
+
+# mục chỉ có bài giảng: không làm bài, không tải đề được
+with server.db() as c:
+    lid = c.execute("INSERT INTO exams(user_id,title,duration_min,lesson,questions) VALUES(?,?,?,?,?)",
+                    (uid, "Chỉ bài giảng", 5, "# Bài", "[]")).lastrowid
+assert call(f"/api/exams/{lid}/submit", {"answers": []}, alice)[0] == 400
+assert call(f"/api/exams/{lid}/export", cookie=alice)[0] == 400
+items = {e["id"]: e for e in call("/api/exams", cookie=alice)[1]}
+assert items[lid]["n"] == 0 and items[lid]["has_lesson"] == 1 and items[eid]["n"] == 2
+assert call("/api/exams", {"docs": [{"name": "a.txt", "data": ""}], "mode": "xyz"}, alice)[0] == 400
+
 call("/api/logout", {}, alice)
 assert call("/api/me", cookie=alice)[0] == 401
 httpd.shutdown()

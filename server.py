@@ -103,7 +103,10 @@ def save_uploads(files, folder, prefix):
     return names
 
 
-def generate_exam(docs, samples, n_questions, qtype, notes):
+def generate_exam(docs, samples, n_questions, qtype, notes, mode="both"):
+    """mode: "both" (bài giảng + đề), "exam" (chỉ đề), "lesson" (chỉ bài giảng)."""
+    lesson_task = ("Viết một bài giảng tiếng Việt (Markdown) dễ hiểu, có cấu trúc, tóm tắt và giải thích nội dung chính của tài liệu."
+                   if mode != "exam" else 'KHÔNG viết bài giảng: để "lesson" là chuỗi rỗng "".')
     with tempfile.TemporaryDirectory() as tmp:
         doc_names = save_uploads(docs, tmp, "tai_lieu_")
         sample_names = save_uploads(samples, tmp, "de_mau_")
@@ -114,9 +117,9 @@ def generate_exam(docs, samples, n_questions, qtype, notes):
 - Đề kiểm tra mẫu: {", ".join(sample_names) or "(không có)"}
 
 Nhiệm vụ:
-1. Viết một bài giảng tiếng Việt (Markdown) dễ hiểu, có cấu trúc, tóm tắt và giải thích nội dung chính của tài liệu.
-2. Tạo đúng {n_questions} câu hỏi kiểm tra, {types}, bám sát nội dung tài liệu.
-   Nếu có đề mẫu, bắt chước phong cách, độ khó và cách hỏi của đề mẫu.
+1. {lesson_task}
+2. {f'''Tạo đúng {n_questions} câu hỏi kiểm tra, {types}, bám sát nội dung tài liệu.
+   Nếu có đề mẫu, bắt chước phong cách, độ khó và cách hỏi của đề mẫu.''' if mode != "lesson" else 'KHÔNG tạo câu hỏi: để "questions" là mảng rỗng [].'}
 {("Yêu cầu thêm của người dùng: " + notes) if notes else ""}
 
 CHỈ trả về một đối tượng JSON hợp lệ, không kèm chữ nào khác, theo đúng cấu trúc:
@@ -127,6 +130,13 @@ CHỈ trả về một đối tượng JSON hợp lệ, không kèm chữ nào k
  ]}}
 Với mcq, "answer" là chỉ số (bắt đầu từ 0) của đáp án đúng trong "options"."""
         data = extract_json(ask_claude(prompt, tmp))
+    if mode == "lesson":
+        data["questions"] = []
+        if not data.get("lesson"):
+            raise ValueError("Claude không tạo được bài giảng, hãy thử lại")
+        return data
+    if mode == "exam":
+        data["lesson"] = ""
     qs = data.get("questions")
     if not isinstance(qs, list) or not qs:
         raise ValueError("Claude không tạo được câu hỏi")
@@ -280,12 +290,14 @@ class Handler(BaseHTTPRequestHandler):
     def exams_get(self, u, id_, action, q):
         if id_ is None:
             with db() as c:
-                rows = c.execute("""SELECT e.id, e.title, e.duration_min, e.created, json_array_length(e.questions) n,
+                rows = c.execute("""SELECT e.id, e.title, e.duration_min, e.created, json_array_length(e.questions) n, length(e.lesson) > 0 has_lesson,
                     (SELECT COUNT(*) FROM attempts a WHERE a.exam_id=e.id) attempts,
                     (SELECT MAX(score) FROM attempts a WHERE a.exam_id=e.id) best
                     FROM exams e WHERE user_id=? ORDER BY id DESC""", (u["id"],)).fetchall()
             return self.send(200, [dict(r) for r in rows])
         e = self.get_exam(u, id_)
+        if action == "export" and e["questions"] == "[]":
+            raise ValueError("Mục này chỉ có bài giảng, không có đề để tải")
         if action == "export":
             key = q.get("key") == ["1"]
             fname = f"de_{id_}{'_dap_an' if key else ''}.doc"
@@ -304,9 +316,12 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Cần tải lên ít nhất một tài liệu")
             n = int(b.get("n_questions", 10))
             minutes = int(b.get("duration_min", 15))
+            mode = b.get("mode", "both")
+            if mode not in ("both", "exam", "lesson") or b.get("qtype", "mcq") not in ("mcq", "essay", "mixed"):
+                raise ValueError("Lựa chọn không hợp lệ")
             if not (1 <= n <= 100 and 1 <= minutes <= 300):
                 raise ValueError("Số câu 1-100, thời gian 1-300 phút")
-            data = generate_exam(b["docs"], b.get("samples", []), n, b.get("qtype", "mcq"), b.get("notes", "").strip())
+            data = generate_exam(b["docs"], b.get("samples", []), n, b.get("qtype", "mcq"), b.get("notes", "").strip(), mode)
             with db() as c:
                 cur = c.execute("INSERT INTO exams(user_id,title,duration_min,lesson,questions) VALUES(?,?,?,?,?)",
                                 (u["id"], data.get("title", "Đề kiểm tra"), minutes, data.get("lesson", ""),
@@ -315,6 +330,8 @@ class Handler(BaseHTTPRequestHandler):
         if action == "submit":
             e = self.get_exam(u, id_)
             qs = json.loads(e["questions"])
+            if not qs:
+                raise ValueError("Mục này chỉ có bài giảng, không có đề để làm")
             answers = b.get("answers", [])
             score, results = grade(qs, answers)
             with db() as c:
