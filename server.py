@@ -49,6 +49,11 @@ if os.name == "nt":
         _reg_path(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
         _reg_path(winreg.HKEY_CURRENT_USER, "Environment"))))
 CLAUDE = shutil.which("claude")
+if not CLAUDE and os.name == "nt":
+    # Claude Code cài từ trong app Claude desktop (gói MSIX) bị Windows chuyển AppData\Roaming vào thư mục riêng của app,
+    # nên cửa sổ mở từ Explorer không thấy. shortcut: phụ thuộc thư mục của app, cài lại bằng npm ngoài app thì bỏ được
+    import glob
+    CLAUDE = next(iter(glob.glob(os.path.expandvars(r"%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\npm\claude.cmd"))), None)
 
 
 def ask_claude(prompt, cwd):
