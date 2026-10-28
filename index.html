@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Học & Kiểm tra</title>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<style>
+:root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --muted:#6b7280; --line:#e3e6eb; --accent:#2563eb; --ok:#15803d; --bad:#b91c1c; }
+@media (prefers-color-scheme: dark) { :root { --bg:#14171c; --card:#1e232b; --text:#e6e8eb; --muted:#9aa3ae; --line:#2f3640; --accent:#60a5fa; --ok:#4ade80; --bad:#f87171; } }
+* { box-sizing:border-box; }
+body { margin:0; font:16px/1.55 system-ui, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+main { max-width:860px; margin:0 auto; padding:16px; }
+header { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:16px; }
+h1 { font-size:22px; margin:0; } h2 { font-size:18px; margin:0 0 12px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px; margin-bottom:16px; }
+label { display:block; font-size:14px; color:var(--muted); margin:10px 0 4px; }
+input, select, textarea { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:7px; background:var(--bg); color:var(--text); font:inherit; }
+textarea { min-height:90px; resize:vertical; }
+.row { display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:12px; }
+button { padding:9px 14px; border:1px solid var(--line); border-radius:7px; background:var(--card); color:var(--text); font:inherit; cursor:pointer; }
+button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+button:disabled { opacity:.6; cursor:wait; }
+.actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+.item { border-top:1px solid var(--line); padding:12px 0; }
+.item:first-of-type { border-top:0; }
+.muted { color:var(--muted); font-size:14px; }
+.err { color:var(--bad); margin-top:8px; }
+.q { padding:14px 0; border-top:1px solid var(--line); }
+.q label { color:var(--text); font-size:16px; display:flex; gap:8px; align-items:flex-start; margin:6px 0; cursor:pointer; }
+.q input[type=radio] { width:auto; margin-top:5px; }
+.timer { position:sticky; top:0; z-index:1; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 14px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; font-weight:600; }
+.timer.low { color:var(--bad); }
+.ok { color:var(--ok); } .bad { color:var(--bad); }
+.score { font-size:40px; font-weight:700; }
+.lesson img { max-width:100%; }
+.hidden { display:none; }
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const app = $("#app");
+let me = null, timerId = null;
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { "Content-Type": "application/json" }, body: opts.body && JSON.stringify(opts.body) });
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 401 && path !== "/api/login") { me = null; renderAuth(); throw new Error(data.error); }
+  if (!r.ok) throw new Error(data.error || "Lỗi máy chủ");
+  return data;
+}
+
+const readFiles = input => Promise.all([...input.files].map(f => new Promise((ok, fail) => {
+  const fr = new FileReader();
+  fr.onload = () => ok({ name: f.name, data: fr.result.split(",")[1] });
+  fr.onerror = fail;
+  fr.readAsDataURL(f);
+})));
+
+function header() {
+  return `<header><h1><a href="#/" style="color:inherit;text-decoration:none">📚 Học & Kiểm tra</a></h1>
+    <div class="muted">${esc(me.username)} · <button onclick="logout()">Đăng xuất</button></div></header>`;
+}
+
+// ---------- Đăng nhập ----------
+function renderAuth() {
+  app.innerHTML = `<div class="card" style="max-width:380px;margin:60px auto">
+    <h2>Đăng nhập</h2>
+    <form id="auth">
+      <label for="u">Tên đăng nhập</label><input id="u" autocomplete="username" required>
+      <label for="p">Mật khẩu</label><input id="p" type="password" autocomplete="current-password" required>
+      <div class="actions"><button class="primary" value="login">Đăng nhập</button><button value="register">Tạo tài khoản</button></div>
+      <div class="err" id="err" role="alert"></div>
+    </form></div>`;
+  $("#auth").onsubmit = async e => {
+    e.preventDefault();
+    try {
+      me = await api("/api/" + e.submitter.value, { method: "POST", body: { username: $("#u").value, password: $("#p").value } });
+      route();
+    } catch (x) { $("#err").textContent = x.message; }
+  };
+}
+
+async function logout() { await api("/api/logout", { method: "POST" }); me = null; location.hash = "#/"; renderAuth(); }
+
+// ---------- Trang chính ----------
+async function renderHome() {
+  const [exams, attempts] = await Promise.all([api("/api/exams"), api("/api/attempts")]);
+  app.innerHTML = header() + `
+  <div class="card"><h2>Tạo đề mới</h2>
+    <form id="gen">
+      <label for="docs">Tài liệu học (PDF, DOCX, TXT, MD)</label><input id="docs" type="file" multiple accept=".pdf,.docx,.txt,.md" required>
+      <label for="samples">Đề kiểm tra mẫu (không bắt buộc)</label><input id="samples" type="file" multiple accept=".pdf,.docx,.txt,.md">
+      <div class="row">
+        <div><label for="n">Số câu hỏi</label><input id="n" type="number" min="1" max="100" value="10" required></div>
+        <div><label for="t">Thời gian (phút)</label><input id="t" type="number" min="1" max="300" value="15" required></div>
+        <div><label for="qt">Loại câu hỏi</label><select id="qt">
+          <option value="mcq">Trắc nghiệm</option><option value="essay">Tự luận</option><option value="mixed">Kết hợp</option></select></div>
+      </div>
+      <label for="notes">Yêu cầu thêm (không bắt buộc)</label><textarea id="notes" placeholder="VD: tập trung vào chương 2, độ khó vừa phải"></textarea>
+      <div class="actions"><button class="primary" id="genBtn">Tạo đề & bài giảng</button></div>
+      <div class="muted hidden" id="wait">Claude đang đọc tài liệu và soạn đề, thường mất 1–3 phút. Đừng đóng trang…</div>
+      <div class="err" id="err" role="alert"></div>
+    </form></div>
+  <div class="card"><h2>Đề của tôi</h2>${exams.length ? exams.map(e => `
+    <div class="item"><b>${esc(e.title)}</b>
+      <div class="muted">${e.n} câu · ${e.duration_min} phút · ${e.attempts} lần làm${e.best != null ? ` · cao nhất ${e.best}/10` : ""} · ${e.created}</div>
+      <div class="actions">
+        <button onclick="location.hash='#/lesson/${e.id}'">Bài giảng</button>
+        <button class="primary" onclick="location.hash='#/exam/${e.id}'">Làm bài</button>
+        <a href="/api/exams/${e.id}/export"><button>Tải đề (.doc)</button></a>
+        <a href="/api/exams/${e.id}/export?key=1"><button>Tải đề + đáp án</button></a>
+        <button onclick="delExam(${e.id})">Xoá</button>
+      </div></div>`).join("") : `<p class="muted">Chưa có đề nào.</p>`}</div>
+  <div class="card"><h2>Lịch sử làm bài</h2>${attempts.length ? attempts.map(a => `
+    <div class="item" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <div><b>${esc(a.title)}</b><div class="muted">${a.created}</div></div>
+      <div><b>${a.score}/10</b> <button onclick="location.hash='#/result/${a.id}'">Xem</button></div></div>`).join("") : `<p class="muted">Chưa làm bài nào.</p>`}</div>`;
+
+  $("#gen").onsubmit = async e => {
+    e.preventDefault();
+    const btn = $("#genBtn");
+    btn.disabled = true; $("#wait").classList.remove("hidden"); $("#err").textContent = "";
+    try {
+      const r = await api("/api/exams", { method: "POST", body: {
+        docs: await readFiles($("#docs")), samples: await readFiles($("#samples")),
+        n_questions: +$("#n").value, duration_min: +$("#t").value, qtype: $("#qt").value, notes: $("#notes").value } });
+      location.hash = `#/lesson/${r.id}`;
+    } catch (x) { $("#err").textContent = x.message; btn.disabled = false; $("#wait").classList.add("hidden"); }
+  };
+}
+
+async function delExam(id) {
+  if (!confirm("Xoá đề này và toàn bộ lịch sử làm bài của nó?")) return;
+  await api(`/api/exams/${id}`, { method: "DELETE" });
+  renderHome();
+}
+
+// ---------- Bài giảng ----------
+async function renderLesson(id) {
+  const e = await api(`/api/exams/${id}`);
+  app.innerHTML = header() + `<div class="card lesson"><h2>${esc(e.title)}</h2>${DOMPurify.sanitize(marked.parse(e.lesson || "_Không có bài giảng._"))}
+    <div class="actions"><button class="primary" onclick="location.hash='#/exam/${id}'">Làm bài kiểm tra (${e.questions.length} câu, ${e.duration_min} phút)</button>
+    <button onclick="print()">In / Lưu PDF</button></div></div>`;
+}
+
+// ---------- Làm bài ----------
+async function renderExam(id) {
+  const e = await api(`/api/exams/${id}`);
+  app.innerHTML = header() + `<div class="timer" id="timer"><span>${esc(e.title)}</span><span id="clock"></span></div>
+    <form class="card" id="exam">${e.questions.map((q, i) => `<div class="q"><b>Câu ${i + 1}.</b> ${esc(q.question)}
+      ${q.type === "mcq" ? q.options.map((o, j) => `<label><input type="radio" name="q${i}" value="${j}"> ${"ABCDEFGH"[j]}. ${esc(o)}</label>`).join("")
+        : `<textarea name="q${i}" aria-label="Trả lời câu ${i + 1}"></textarea>`}</div>`).join("")}
+      <div class="actions"><button class="primary" id="submitBtn">Nộp bài</button></div>
+      <div class="muted hidden" id="wait">Đang chấm bài…</div><div class="err" id="err" role="alert"></div></form>`;
+
+  const form = $("#exam");
+  const end = Date.now() + e.duration_min * 60000;
+  let sent = false;
+  const submit = async () => {
+    if (sent) return; sent = true;
+    clearInterval(timerId); window.onbeforeunload = null;
+    $("#submitBtn").disabled = true; $("#wait").classList.remove("hidden");
+    const answers = e.questions.map((q, i) => {
+      const f = form.elements[`q${i}`];
+      return q.type === "mcq" ? (form.querySelector(`[name=q${i}]:checked`) ? +form.querySelector(`[name=q${i}]:checked`).value : null) : f.value;
+    });
+    try {
+      const r = await api(`/api/exams/${id}/submit`, { method: "POST", body: { answers } });
+      location.hash = `#/result/${r.id}`;
+    } catch (x) { $("#err").textContent = x.message + " — bấm Nộp bài để thử lại."; sent = false; $("#submitBtn").disabled = false; }
+  };
+  const tick = () => {
+    const left = Math.max(0, end - Date.now());
+    $("#clock").textContent = `⏱ ${String(Math.floor(left / 60000)).padStart(2, "0")}:${String(Math.floor(left / 1000) % 60).padStart(2, "0")}`;
+    $("#timer").classList.toggle("low", left < 60000);
+    if (!left) { alert("Hết giờ! Bài sẽ được nộp tự động."); submit(); }
+  };
+  tick(); timerId = setInterval(tick, 1000);
+  window.onbeforeunload = () => "Bài làm chưa nộp sẽ mất.";
+  form.onsubmit = ev => { ev.preventDefault(); if (confirm("Nộp bài?")) submit(); };
+}
+
+// ---------- Kết quả ----------
+async function renderResult(id) {
+  const a = await api(`/api/attempts/${id}`);
+  app.innerHTML = header() + `<div class="card"><h2>${esc(a.title)}</h2><div class="score">${a.score}/10</div>
+    <div class="muted">${a.created}</div>
+    <div class="actions"><button class="primary" onclick="location.hash='#/exam/${a.exam_id}'">Làm lại</button><button onclick="location.hash='#/'">Về trang chính</button></div></div>
+    <div class="card">${a.questions.map((q, i) => {
+      const r = a.results[i], ans = a.answers[i];
+      const mine = q.type === "mcq" ? (ans == null ? "<i>Bỏ trống</i>" : `${"ABCDEFGH"[ans]}. ${esc(q.options[ans])}`) : esc(ans || "(bỏ trống)").replace(/\n/g, "<br>");
+      return `<div class="q"><b>Câu ${i + 1}.</b> ${esc(q.question)}
+        <p>Bạn trả lời: ${mine}</p>
+        ${q.type === "mcq" ? `<p class="${r.correct ? "ok" : "bad"}">${r.correct ? "✓ Đúng" : `✗ Sai — đáp án: ${"ABCDEFGH"[q.answer]}. ${esc(q.options[q.answer])}`}</p>`
+          : `<p><b>Điểm: ${(+r.score).toFixed(2)}</b></p><p class="muted">Đáp án gợi ý: ${esc(q.sample_answer)}</p>`}
+        ${r.feedback ? `<p class="muted">${esc(r.feedback)}</p>` : ""}</div>`;
+    }).join("")}</div>`;
+}
+
+// ---------- Điều hướng ----------
+async function route() {
+  clearInterval(timerId); window.onbeforeunload = null;
+  if (!me) { try { me = await api("/api/me"); } catch { return; } }
+  const [, page, id] = location.hash.split("/");
+  try {
+    await ({ lesson: renderLesson, exam: renderExam, result: renderResult }[page] || renderHome)(id);
+  } catch (x) { if (me) app.innerHTML = header() +`<div class="card err">${esc(x.message)}</div>`; }
+  scrollTo(0, 0);
+}
+addEventListener("hashchange", route);
+route();
+</script>
+</body>
+</html>
