@@ -20,6 +20,7 @@
   --paper: #ffffff; --ink: #24275e; --muted: #676b8f; --line: #dcdef0;
   --accent: #3b42c4; --accent-ink: #ffffff; --red: #d2323f; --ok: #1f7a4d;
   --margin: rgba(210, 50, 63, .55); --shadow: 0 1px 0 #e3e5f3, 0 12px 28px -18px rgba(36, 39, 94, .35);
+  --side-bg: #262a6b; --side-ink: #ffffff; --side-muted: #b8bbe8; --side-active: #ffffff; --side-active-ink: #24275e;
   --hand: "Patrick Hand", "Comic Sans MS", cursive;
   color-scheme: light;
 }
@@ -29,6 +30,7 @@
     --paper: #141414; --ink: #ededed; --muted: #a3a3a3; --line: #303030;
     --accent: #a9bdff; --accent-ink: #000000; --red: #ff8f8f; --ok: #8fe0b0;
     --margin: rgba(255, 143, 143, .35); --shadow: 0 0 0 1px #262626;
+    --side-bg: #141414; --side-ink: #ededed; --side-muted: #a3a3a3; --side-active: #ededed; --side-active-ink: #000000;
     color-scheme: dark;
   }
 }
@@ -37,6 +39,7 @@
   --paper: #141414; --ink: #ededed; --muted: #a3a3a3; --line: #303030;
   --accent: #a9bdff; --accent-ink: #000000; --red: #ff8f8f; --ok: #8fe0b0;
   --margin: rgba(255, 143, 143, .35); --shadow: 0 0 0 1px #262626;
+  --side-bg: #141414; --side-ink: #ededed; --side-muted: #a3a3a3; --side-active: #ededed; --side-active-ink: #000000;
   color-scheme: dark;
 }
 
@@ -59,11 +62,46 @@ h3 { font-size: 18px; font-weight: 700; }
 a { color: var(--accent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* ---------- Đầu trang ---------- */
-.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 28px; flex-wrap: wrap; }
-.brand { font-size: 20px; font-weight: 700; color: var(--ink); text-decoration: none; display: flex; align-items: baseline; gap: 8px; }
-.brand span { font-family: var(--hand); font-weight: 400; font-size: 24px; color: var(--red); }
-.who { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 14px; }
+/* ---------- Menu trái: bìa vở, mép phải có hàng lỗ gáy lò xo ---------- */
+.shell { display: grid; grid-template-columns: 304px minmax(0, 1fr); min-height: 100vh; }
+.side {
+  position: sticky; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column;
+  background: var(--side-bg); color: var(--side-ink); padding: 26px 34px 20px 18px;
+}
+.side::after { /* lỗ gáy */
+  content: ""; position: absolute; top: 0; bottom: 0; right: 8px; width: 14px;
+  background: radial-gradient(circle at 7px 14px, var(--bg) 4px, transparent 4.6px) 0 0 / 14px 28px repeat-y;
+}
+.side:empty { display: none; }
+.shell:has(.side:empty) { display: block; }
+.brand { color: var(--side-ink); text-decoration: none; padding: 0 10px; }
+.brand b { display: block; font-size: 19px; line-height: 1.2; }
+.brand span { font-family: var(--hand); font-size: 22px; color: #ff9aa4; }
+.menu { list-style: none; margin: 28px 0 0; padding: 0; display: grid; gap: 4px; }
+.menu a {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 10px 12px; border-radius: 6px;
+  color: var(--side-ink); text-decoration: none; font-weight: 500; line-height: 1.35;
+}
+.menu a:hover { background: color-mix(in srgb, var(--side-ink) 10%, transparent); }
+.menu a[aria-current="page"] { background: var(--side-active); color: var(--side-active-ink); }
+.menu .count { font-size: 14px; font-weight: 400; color: var(--side-muted); font-variant-numeric: tabular-nums; }
+.menu a[aria-current="page"] .count { color: inherit; opacity: .7; }
+.side :focus-visible { outline-color: var(--side-ink); }
+.side-foot { margin-top: auto; padding: 18px 10px 0; font-size: 14px; color: var(--side-muted); display: grid; gap: 2px; justify-items: start; }
+.side-foot .link { color: var(--side-ink); padding: 4px 0; }
+main { min-width: 0; width: 100%; padding-top: 32px; }
+.menu .short { display: none; }
+@media (max-width: 860px) {
+  .shell { display: block; }
+  .side { position: static; height: auto; padding: 14px 16px 12px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px 12px; }
+  .side::after { display: none; }
+  .brand b { font-size: 17px; } .brand span { font-size: 18px; }
+  .menu { grid-column: 1 / -1; grid-auto-flow: column; grid-auto-columns: max-content; margin: 0; overflow-x: auto; }
+  .menu a { padding: 8px 12px; }
+  .menu .full { display: none; } .menu .short { display: inline; }
+  .side-foot { margin: 0; padding: 0; grid-row: 1; grid-column: 2; display: flex; gap: 10px; align-items: center; }
+}
+.page-title { margin-bottom: 4px; }
 
 /* ---------- Trang giấy ---------- */
 .sheet {
@@ -195,13 +233,13 @@ button:disabled { opacity: .65; cursor: progress; }
 .auth .lede { margin-bottom: 4px; }
 
 @media print {
-  body { background: #fff; color: #000; } .top, .actions, .timer { display: none !important; }
+  body { background: #fff; color: #000; } .side, .actions, .timer { display: none !important; } .shell { display: block; }
   .sheet { box-shadow: none; padding: 0; } .sheet::before { display: none; }
 }
 </style>
 </head>
 <body>
-<main id="app"></main>
+<div class="shell"><nav class="side" id="side" aria-label="Menu chính"></nav><main id="app"></main></div>
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -239,13 +277,28 @@ const readFiles = input => Promise.all([...input.files].map(f => new Promise((ok
   fr.readAsDataURL(f);
 })));
 
-const header = () => `<header class="top">
-  <a class="brand" href="#/">Học & Kiểm tra <span>vở ôn bài</span></a>
-  <div class="who">${themeBtn()}<span>${esc(me.username)}</span><button class="link" onclick="logout()">Đăng xuất</button></div></header>`;
+// ---------- Menu trái ----------
+// [mục, đường dẫn, nhãn đầy đủ, nhãn ngắn cho điện thoại]
+const MENU = [["create", "#/", "Tạo bài giảng / đề kiểm tra", "Tạo mới"], ["lessons", "#/lessons", "Bài giảng đã tạo", "Bài giảng"],
+  ["exams", "#/exams", "Bài kiểm tra đã tạo", "Bài kiểm tra"]];
+// trang con thuộc mục menu nào
+const SECTION = { lessons: "lessons", lesson: "lessons", exams: "exams", exam: "exams", result: "exams" };
+let items = [];  // danh sách đã soạn, dùng cho số đếm trên menu và các trang danh sách
+
+function renderNav(page) {
+  const active = SECTION[page] || "create";
+  const count = { lessons: items.filter(e => e.has_lesson).length, exams: items.filter(e => e.n).length };
+  $("#side").innerHTML = `
+    <a class="brand" href="#/"><b>Học & Kiểm tra</b><span>vở ôn bài</span></a>
+    <ul class="menu">${MENU.map(([k, href, label, short]) => `<li><a href="${href}" ${k === active ? 'aria-current="page"' : ""}>
+      <span class="full">${label}</span><span class="short">${short}</span>${k in count ? `<span class="count" aria-label="${count[k]} mục">${count[k]}</span>` : ""}</a></li>`).join("")}</ul>
+    <div class="side-foot"><span>${esc(me.username)}</span>${themeBtn()}<button class="link" onclick="logout()">Đăng xuất</button></div>`;
+}
 
 // ---------- Đăng nhập ----------
 function renderAuth() {
-  app.innerHTML = `<div class="top" style="justify-content:flex-end">${themeBtn()}</div>
+  $("#side").innerHTML = "";
+  app.innerHTML = `<div class="actions" style="justify-content:flex-end;margin:0">${themeBtn()}</div>
   <form class="sheet auth" id="auth">
     <h2>Học & Kiểm tra</h2>
     <p class="lede">Đăng nhập để soạn bài giảng, làm đề và xem lại điểm.</p>
@@ -270,12 +323,10 @@ async function logout() { await api("/api/logout", { method: "POST" }); me = nul
 const MODES = { both: "Bài giảng + đề", exam: "Chỉ đề kiểm tra", lesson: "Chỉ bài giảng" };
 const SUBMIT = { both: "Soạn bài giảng và đề", exam: "Soạn đề kiểm tra", lesson: "Soạn bài giảng" };
 
-async function renderHome() {
-  const [exams, attempts] = await Promise.all([api("/api/exams"), api("/api/attempts")]);
-  const kind = e => e.n && e.has_lesson ? "Bài giảng và đề" : e.n ? "Đề kiểm tra" : "Bài giảng";
-  app.innerHTML = header() + `
+async function renderCreate() {
+  app.innerHTML = `
   <form class="sheet" id="gen">
-    <h2>Soạn bài mới</h2>
+    <h2>Tạo bài giảng / đề kiểm tra</h2>
     <p class="lede">Gửi tài liệu học, Claude sẽ đọc và soạn cho bạn.</p>
     <div class="label" id="modeLbl">Bạn cần gì?</div>
     <div class="modes" role="radiogroup" aria-labelledby="modeLbl">${Object.entries(MODES).map(([k, v], i) =>
@@ -297,24 +348,7 @@ async function renderHome() {
     <div class="actions"><button class="primary" id="genBtn">${SUBMIT.both}</button></div>
     <div class="wait hidden" id="wait" role="status"></div>
     <div class="err" id="err" role="alert"></div>
-  </form>
-
-  <div class="list-head"><h2>Đã soạn</h2><span class="muted">${exams.length} mục</span></div>
-  <div class="rows">${exams.length ? exams.map(e => `
-    <div class="rowi"><h3>${esc(e.title)}</h3>
-      <div class="meta">${kind(e)}${e.n ? `, ${e.n} câu, ${e.duration_min} phút` : ""}${e.attempts ? `, đã làm ${e.attempts} lần, cao nhất ${e.best}/10` : ""}</div>
-      <div class="actions">
-        ${e.has_lesson ? `<a class="link" href="#/lesson/${e.id}">Đọc bài giảng</a>` : ""}
-        ${e.n ? `<a class="link" href="#/exam/${e.id}">Làm bài</a>
-          <a class="link" href="/api/exams/${e.id}/export">Tải đề (.doc)</a>
-          <a class="link" href="/api/exams/${e.id}/export?key=1">Tải đề kèm đáp án</a>` : ""}
-        <button class="link danger" onclick="delItem(${e.id})">Xoá</button>
-      </div></div>`).join("") : `<p class="empty">Chưa có gì. Chọn tài liệu ở trên để soạn bài đầu tiên.</p>`}</div>
-
-  <div class="list-head"><h2>Điểm đã làm</h2><span class="muted">${attempts.length} bài</span></div>
-  <div class="rows">${attempts.length ? attempts.map(a => `
-    <a class="rowi hist" href="#/result/${a.id}"><div><h3>${esc(a.title)}</h3><div class="meta">${esc(a.created)}</div></div>
-      <span class="mark">${a.score}</span></a>`).join("") : `<p class="empty">Làm một đề để thấy điểm ở đây.</p>`}</div>`;
+  </form>`;
   afterRender();
 
   const form = $("#gen");
@@ -341,23 +375,62 @@ async function renderHome() {
 }
 
 async function delItem(id) {
-  if (!confirm("Xoá mục này cùng toàn bộ điểm đã làm của nó?")) return;
+  const e = items.find(x => x.id === id);
+  const both = e && e.n && e.has_lesson;
+  if (!confirm(both ? "Mục này gồm cả bài giảng và đề. Xoá sẽ mất cả hai cùng điểm đã làm. Tiếp tục?" : "Xoá mục này cùng điểm đã làm của nó?")) return;
   await api(`/api/exams/${id}`, { method: "DELETE" });
-  renderHome();
+  route();
+}
+
+const empty = (text, cta) => `<p class="empty">${text} <a href="#/">${cta}</a></p>`;
+
+// ---------- Bài giảng đã tạo ----------
+async function renderLessons() {
+  const list = items.filter(e => e.has_lesson);
+  app.innerHTML = `<h2 class="page-title">Bài giảng đã tạo</h2><p class="lede">${list.length} bài giảng, mới nhất ở trên.</p>
+  <div class="rows">${list.length ? list.map(e => `
+    <div class="rowi"><h3><a href="#/lesson/${e.id}" style="color:inherit;text-decoration:none">${esc(e.title)}</a></h3>
+      <div class="meta">Tạo lúc ${esc(e.created)}${e.n ? `, có kèm đề ${e.n} câu` : ""}</div>
+      <div class="actions">
+        <a class="link" href="#/lesson/${e.id}">Đọc bài giảng</a>
+        ${e.n ? `<a class="link" href="#/exam/${e.id}">Làm đề kèm theo</a>` : ""}
+        <button class="link danger" onclick="delItem(${e.id})">Xoá</button>
+      </div></div>`).join("") : empty("Chưa có bài giảng nào.", "Tạo bài giảng đầu tiên")}</div>`;
+}
+
+// ---------- Bài kiểm tra đã tạo ----------
+async function renderExams() {
+  const list = items.filter(e => e.n);
+  const attempts = await api("/api/attempts");
+  app.innerHTML = `<h2 class="page-title">Bài kiểm tra đã tạo</h2><p class="lede">${list.length} đề, mới nhất ở trên.</p>
+  <div class="rows">${list.length ? list.map(e => `
+    <div class="rowi"><h3>${esc(e.title)}</h3>
+      <div class="meta">${e.n} câu, ${e.duration_min} phút${e.attempts ? `, đã làm ${e.attempts} lần, cao nhất ${e.best}/10` : ", chưa làm lần nào"}</div>
+      <div class="actions">
+        <a class="link" href="#/exam/${e.id}">Làm bài</a>
+        <a class="link" href="/api/exams/${e.id}/export">Tải đề (.doc)</a>
+        <a class="link" href="/api/exams/${e.id}/export?key=1">Tải đề kèm đáp án</a>
+        ${e.has_lesson ? `<a class="link" href="#/lesson/${e.id}">Đọc bài giảng</a>` : ""}
+        <button class="link danger" onclick="delItem(${e.id})">Xoá</button>
+      </div></div>`).join("") : empty("Chưa có đề nào.", "Tạo đề đầu tiên")}</div>
+
+  <div class="list-head"><h2>Điểm đã làm</h2><span class="muted">${attempts.length} lần</span></div>
+  <div class="rows">${attempts.length ? attempts.map(a => `
+    <a class="rowi hist" href="#/result/${a.id}"><div><h3>${esc(a.title)}</h3><div class="meta">${esc(a.created)}</div></div>
+      <span class="mark">${a.score}</span></a>`).join("") : `<p class="empty">Làm một đề để thấy điểm ở đây.</p>`}</div>`;
 }
 
 // ---------- Bài giảng / tổng quan một mục ----------
 async function renderLesson(id) {
   const e = await api(`/api/exams/${id}`);
   const n = e.questions.length;
-  app.innerHTML = header() + `<article class="sheet">
+  app.innerHTML = `<article class="sheet">
     ${e.lesson ? `<div class="lesson">${DOMPurify.sanitize(marked.parse(e.lesson))}</div>`
       : `<h2>${esc(e.title)}</h2><p class="lede">Đề đã sẵn sàng: ${n} câu, làm trong ${e.duration_min} phút. Đồng hồ bắt đầu chạy khi bạn bấm Làm bài.</p>`}
     <div class="actions">
       ${n ? `<a class="btn primary" href="#/exam/${id}">Làm bài (${n} câu, ${e.duration_min} phút)</a>
         <a class="btn" href="/api/exams/${id}/export">Tải đề (.doc)</a>` : ""}
       ${e.lesson ? `<button onclick="print()">In bài giảng</button>` : ""}
-      <a class="link" href="#/">Về trang chính</a>
     </div></article>`;
   afterRender();
 }
@@ -365,7 +438,7 @@ async function renderLesson(id) {
 // ---------- Làm bài ----------
 async function renderExam(id) {
   const e = await api(`/api/exams/${id}`);
-  app.innerHTML = header() + `<div class="timer" id="timer" role="timer"><span>Thời gian còn lại</span><b id="clock"></b></div>
+  app.innerHTML = `<div class="timer" id="timer" role="timer"><span>Thời gian còn lại</span><b id="clock"></b></div>
     <form class="sheet" id="exam">
       <h2>${esc(e.title)}</h2>
       <div class="paper-head"><span>${e.questions.length} câu</span><span>Thời gian làm bài: ${e.duration_min} phút</span></div>
@@ -411,10 +484,10 @@ async function renderExam(id) {
 async function renderResult(id) {
   const a = await api(`/api/attempts/${id}`);
   const fmt = x => (+x).toFixed(2).replace(/\.?0+$/, "");
-  app.innerHTML = header() + `<div class="sheet">
+  app.innerHTML = `<div class="sheet">
     <div class="result-top"><div class="score" aria-label="Điểm ${a.score} trên 10">${a.score}</div>
       <div><h2>${esc(a.title)}</h2><p class="lede" style="margin:4px 0 0">Thang điểm 10, nộp lúc ${esc(a.created)}</p></div></div>
-    <div class="actions"><a class="btn primary" href="#/exam/${a.exam_id}">Làm lại đề này</a><a class="link" href="#/">Về trang chính</a></div></div>
+    <div class="actions"><a class="btn primary" href="#/exam/${a.exam_id}">Làm lại đề này</a><a class="link" href="#/exams">Xem các bài kiểm tra</a></div></div>
     <div class="sheet">${a.questions.map((q, i) => {
       const r = a.results[i], ans = a.answers[i];
       const tick = q.type === "mcq" ? (r.correct ? `<span class="tick ok" aria-label="Đúng">✓</span>` : `<span class="tick bad" aria-label="Sai">✗</span>`) : "";
@@ -436,8 +509,11 @@ async function route() {
   if (!me) { try { me = await api("/api/me"); } catch { return; } }
   const [, page, id] = location.hash.split("/");
   try {
-    await ({ lesson: renderLesson, exam: renderExam, result: renderResult }[page] || renderHome)(id);
-  } catch (x) { if (me) { app.innerHTML = header() + `<div class="sheet err">${esc(x.message)} <a href="#/">Về trang chính</a></div>`; afterRender(); } }
+    items = await api("/api/exams");
+    renderNav(page);
+    await ({ lessons: renderLessons, exams: renderExams, lesson: renderLesson, exam: renderExam, result: renderResult }[page] || renderCreate)(id);
+  } catch (x) { if (me) app.innerHTML = `<div class="sheet err">${esc(x.message)} <a href="#/">Về trang tạo bài</a></div>`; }
+  afterRender();
   scrollTo(0, 0);
 }
 addEventListener("hashchange", route);
