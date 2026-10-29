@@ -28,11 +28,17 @@ def init_db():
             lesson TEXT, questions TEXT, created TEXT DEFAULT (datetime('now','localtime')));
         CREATE TABLE IF NOT EXISTS attempts(id INTEGER PRIMARY KEY, exam_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
             answers TEXT, result TEXT, score REAL, created TEXT DEFAULT (datetime('now','localtime')));
+        CREATE TABLE IF NOT EXISTS subjects(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, name TEXT NOT NULL,
+            created TEXT DEFAULT (datetime('now','localtime')));
+        CREATE TABLE IF NOT EXISTS docs(id INTEGER PRIMARY KEY, subject_id INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT,
+            pages INTEGER, digest TEXT, created TEXT DEFAULT (datetime('now','localtime')));
         """)
-        try:  # cột thêm sau: dấu vân tay tài liệu, để nhận ra các đề tạo từ cùng tài liệu
-            c.execute("ALTER TABLE exams ADD COLUMN docs_hash TEXT")
-        except sqlite3.OperationalError:
-            pass  # đã có cột
+        # cột thêm sau: docs_hash nhận ra các đề tạo từ cùng tài liệu; subject_id là môn học của đề
+        for col in ("docs_hash TEXT", "subject_id INTEGER"):
+            try:
+                c.execute(f"ALTER TABLE exams ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass  # đã có cột
 
 
 def hash_pw(pw, salt):
@@ -66,19 +72,32 @@ if not CLAUDE and os.name == "nt":
     CLAUDE = next(iter(glob.glob(os.path.expandvars(r"%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\npm\claude.cmd"))), None)
 
 
-def ask_claude(prompt, cwd):
-    """Gọi Claude Code ở chế độ không tương tác, trả về text kết quả."""
+SYSTEM_PROMPT = "Bạn là giáo viên soạn bài giảng và đề kiểm tra. Làm đúng yêu cầu và trả về đúng định dạng được yêu cầu."
+
+
+def ask_claude(prompt, cwd, tools="Read"):
+    """Gọi Claude Code ở chế độ không tương tác, trả về text kết quả.
+    tools="" khi không cần đọc file. Lời dặn hệ thống ngắn và bỏ MCP/plugin/settings: phí cố định mỗi lần gọi
+    giảm từ ~43.000 xuống ~900-2.000 token (đo ngày 29/10/2026)."""
     if not CLAUDE:
         raise RuntimeError("Không tìm thấy lệnh 'claude'. Hãy cài Claude Code và đăng nhập.")
     # prompt đi qua stdin vì dòng lệnh Windows giới hạn ~8000 ký tự
-    p = subprocess.run([CLAUDE, "-p", "--output-format", "json", "--allowedTools", "Read"],
-                       input=prompt, capture_output=True, text=True, encoding="utf-8", cwd=cwd, timeout=900)
+    # realpath: thư mục tạm có thể là tên rút gọn kiểu C:\Users\TRANMA~1\..., Claude Code từ chối đọc file ở đường dẫn đó
+    p = subprocess.run([CLAUDE, "-p", "--output-format", "json", "--tools", tools, "--system-prompt", SYSTEM_PROMPT,
+                        "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence",
+                        *(["--allowedTools", tools] if tools else [])],
+                       input=prompt, capture_output=True, text=True, encoding="utf-8", cwd=os.path.realpath(cwd), timeout=900)
     try:
         out = json.loads(p.stdout)
     except json.JSONDecodeError:
         raise RuntimeError("Claude lỗi: " + (p.stderr or p.stdout)[:500])
     if out.get("is_error"):
         raise RuntimeError("Claude lỗi: " + str(out.get("result"))[:500])
+    if out.get("permission_denials"):  # không đọc được file thì câu trả lời chỉ là lời giải thích, không được lưu
+        raise RuntimeError("Claude không được phép đọc file tài liệu, hãy thử lại")
+    u = out.get("usage", {})
+    used = sum(u.get(k, 0) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+    print(f"[Claude] vào {used:,} token, ra {u.get('output_tokens', 0):,} token", flush=True)
     return out["result"]
 
 
@@ -118,9 +137,8 @@ def save_uploads(files, folder, prefix):
     return names
 
 
-def generate_exam(docs, samples, n_questions, qtype, notes, mode="both", avoid=()):
-    """mode: "both" (bài giảng + đề), "exam" (chỉ đề), "lesson" (chỉ bài giảng).
-    avoid: câu hỏi của các đề trước tạo từ cùng tài liệu, không được lặp lại."""
+def task_prompt(n_questions, qtype, notes, mode, avoid):
+    """Phần "Nhiệm vụ" dùng chung cho tạo đề từ file và từ bản ghi nhớ môn học."""
     lesson_task = ("Viết một bài giảng tiếng Việt (Markdown) dễ hiểu, có cấu trúc, tóm tắt và giải thích nội dung chính của tài liệu."
                    if mode != "exam" else 'KHÔNG viết bài giảng: để "lesson" là chuỗi rỗng "".')
     avoid_task = ("""
@@ -128,15 +146,9 @@ Các câu hỏi dưới đây ĐÃ CÓ trong những đề trước tạo từ c
 không hỏi lại nguyên văn hay diễn đạt lại cùng một câu, câu tính toán không dùng lại bộ số liệu cũ.
 Ưu tiên những ý kiến thức trong tài liệu mà các câu này chưa hỏi tới.
 """ + "\n".join(f"- {q}" for q in avoid)) if avoid and mode != "lesson" else ""
-    with tempfile.TemporaryDirectory() as tmp:
-        doc_names = save_uploads(docs, tmp, "tai_lieu_")
-        sample_names = save_uploads(samples, tmp, "de_mau_")
-        types = {"mcq": 'chỉ trắc nghiệm ("mcq")', "essay": 'chỉ tự luận ("essay")',
-                 "mixed": "kết hợp trắc nghiệm và tự luận (khoảng 70% trắc nghiệm)"}[qtype]
-        prompt = f"""Bạn là giáo viên. Dùng công cụ Read để đọc các file trong thư mục hiện tại:
-- Tài liệu học: {", ".join(doc_names)}
-- Đề kiểm tra mẫu: {", ".join(sample_names) or "(không có)"}
-
+    types = {"mcq": 'chỉ trắc nghiệm ("mcq")', "essay": 'chỉ tự luận ("essay")',
+             "mixed": "kết hợp trắc nghiệm và tự luận (khoảng 70% trắc nghiệm)"}[qtype]
+    return f"""
 Nhiệm vụ:
 1. {lesson_task}
 2. {f'''Tạo đúng {n_questions} câu hỏi kiểm tra, {types}, bám sát nội dung tài liệu.
@@ -151,7 +163,59 @@ CHỈ trả về một đối tượng JSON hợp lệ, không kèm chữ nào k
   {{"type": "essay", "question": "...", "sample_answer": "...", "rubric": "tiêu chí chấm"}}
  ]}}
 Với mcq, "answer" là chỉ số (bắt đầu từ 0) của đáp án đúng trong "options"."""
-        data = extract_json(ask_claude(prompt, tmp))
+
+
+def generate_exam(docs, samples, n_questions, qtype, notes, mode="both", avoid=()):
+    """Tạo từ file gửi lên (Claude đọc lại file mỗi lần).
+    mode: "both" (bài giảng + đề), "exam" (chỉ đề), "lesson" (chỉ bài giảng).
+    avoid: câu hỏi của các đề trước tạo từ cùng tài liệu, không được lặp lại."""
+    with tempfile.TemporaryDirectory() as tmp:
+        doc_names = save_uploads(docs, tmp, "tai_lieu_")
+        sample_names = save_uploads(samples, tmp, "de_mau_")
+        prompt = f"""Dùng công cụ Read để đọc các file trong thư mục hiện tại:
+- Tài liệu học: {", ".join(doc_names)}
+- Đề kiểm tra mẫu: {", ".join(sample_names) or "(không có)"}
+""" + task_prompt(n_questions, qtype, notes, mode, avoid)
+        return check_generated(extract_json(ask_claude(prompt, tmp)), mode)
+
+
+def generate_from_notes(docs, samples, n_questions, qtype, notes, mode="both", avoid=()):
+    """Tạo từ bản ghi nhớ đã quét của môn học: không đọc lại file, không cần công cụ nên rẻ hơn nhiều.
+    docs, samples: danh sách (tên, bản ghi nhớ)."""
+    block = lambda tag, items: "\n".join(f'<{tag} ten="{n}">\n{d}\n</{tag}>' for n, d in items)
+    prompt = f"""Tài liệu học dưới đây là bản ghi nhớ kiến thức đã được tóm tắt đầy đủ từ tài liệu gốc.
+{block("tai_lieu", docs)}
+{("Đề kiểm tra mẫu (chép lại từ đề gốc):" + chr(10) + block("de_mau", samples)) if samples else "Không có đề mẫu."}
+""" + task_prompt(n_questions, qtype, notes, mode, avoid)
+    with tempfile.TemporaryDirectory() as tmp:
+        return check_generated(extract_json(ask_claude(prompt, tmp, tools="")), mode)
+
+
+DIGEST_PROMPT = {
+    "doc": """Dùng công cụ Read đọc file {name} trong thư mục hiện tại. Viết BẢN GHI NHỚ KIẾN THỨC của file để sau này
+ra đề kiểm tra và viết bài giảng mà KHÔNG cần đọc lại file:
+- Giữ ĐỦ mọi định nghĩa, công thức (viết bằng LaTeX gọn trong $...$), định lý và điều kiện áp dụng, bảng giá trị quan trọng.
+- Giữ các ví dụ có số liệu kèm lời giải tóm tắt, và liệt kê các dạng bài tập có trong file.
+- Bỏ lời dẫn, trang trí, nội dung lặp lại. Viết cô đọng bằng tiếng Việt, giữ thuật ngữ gốc trong ngoặc khi cần.
+CHỈ trả về nội dung Markdown của bản ghi nhớ.""",
+    "sample": """Dùng công cụ Read đọc file {name} trong thư mục hiện tại. Đây là một đề kiểm tra mẫu.
+Mở đầu bằng một đoạn ngắn mô tả: cấu trúc đề, số câu từng dạng, độ khó, cách hỏi, thang điểm.
+Sau đó chép lại NGUYÊN VĂN toàn bộ câu hỏi (kể cả phương án và số liệu), công thức viết bằng LaTeX gọn trong $...$.
+CHỈ trả về nội dung Markdown.""",
+}
+
+
+def digest_doc(f, kind):
+    """Quét một file một lần, trả về bản ghi nhớ để lưu vào môn học."""
+    with tempfile.TemporaryDirectory() as tmp:
+        name = save_uploads([f], tmp, "tai_lieu_")[0]
+        text = ask_claude(DIGEST_PROMPT[kind].format(name=name), tmp).strip()
+    if len(text) < 50:
+        raise ValueError(f"Claude không đọc được nội dung file {f['name']}, hãy thử lại")
+    return text
+
+
+def check_generated(data, mode):
     if mode == "lesson":
         data["questions"] = []
         if not data.get("lesson"):
@@ -190,7 +254,7 @@ def grade(questions, answers):
                   + json.dumps(items, ensure_ascii=False) +
                   '\nCHỈ trả về JSON dạng: [{"id": 0, "score": 7.5, "feedback": "..."}]')
         with tempfile.TemporaryDirectory() as tmp:
-            graded = {g["id"]: g for g in extract_json(ask_claude(prompt, tmp))}
+            graded = {g["id"]: g for g in extract_json(ask_claude(prompt, tmp, tools=""))}
         for i in essays:
             g = graded.get(i, {"score": 0, "feedback": "Không chấm được câu này."})
             s = min(max(float(g.get("score", 0)), 0), 10)
@@ -264,7 +328,7 @@ class Handler(BaseHTTPRequestHandler):
             u = self.user()
             if not u:
                 return self.send(401, {"error": "Chưa đăng nhập"})
-            m = re.fullmatch(r"/api/(exams|attempts)(?:/(\d+))?(?:/(\w+))?", path)
+            m = re.fullmatch(r"/api/(exams|attempts|subjects|docs)(?:/(\d+))?(?:/(\w+))?", path)
             if path == "/api/me":
                 return self.send(200, u)
             if path == "/api/logout" and method == "POST":
@@ -331,30 +395,39 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, {"id": e["id"], "title": e["title"], "duration_min": e["duration_min"],
                         "lesson": e["lesson"], "questions": public})
 
+    @staticmethod
+    def gen_params(b):
+        """Đọc và kiểm tra các lựa chọn tạo đề: (số câu, phút, kiểu câu hỏi, yêu cầu thêm, chế độ)."""
+        n, minutes, mode, qtype = int(b.get("n_questions", 10)), int(b.get("duration_min", 15)), b.get("mode", "both"), b.get("qtype", "mcq")
+        if mode not in ("both", "exam", "lesson") or qtype not in ("mcq", "essay", "mixed"):
+            raise ValueError("Lựa chọn không hợp lệ")
+        if not (1 <= n <= 100 and 1 <= minutes <= 300):
+            raise ValueError("Số câu 1-100, thời gian 1-300 phút")
+        return n, minutes, qtype, b.get("notes", "").strip(), mode
+
+    @staticmethod
+    def avoid_list(u, fp):
+        with db() as c:
+            rows = c.execute("SELECT questions FROM exams WHERE user_id=? AND docs_hash=? ORDER BY id DESC", (u["id"], fp)).fetchall()
+        # shortcut: chỉ gửi 150 câu gần nhất cho prompt khỏi quá dài; cần hơn thì tóm tắt theo chủ đề
+        return [q["question"] for r in rows for q in json.loads(r["questions"])][:150]
+
+    @staticmethod
+    def save_exam(u, data, minutes, fp, subject_id=None):
+        with db() as c:
+            return c.execute("INSERT INTO exams(user_id,title,duration_min,lesson,questions,docs_hash,subject_id) VALUES(?,?,?,?,?,?,?)",
+                             (u["id"], data.get("title", "Đề kiểm tra"), minutes, data.get("lesson", ""),
+                              json.dumps(data["questions"], ensure_ascii=False), fp, subject_id)).lastrowid
+
     def exams_post(self, u, id_, action, q):
         b = self.body()
         if id_ is None:
             if not b.get("docs"):
                 raise ValueError("Cần tải lên ít nhất một tài liệu")
-            n = int(b.get("n_questions", 10))
-            minutes = int(b.get("duration_min", 15))
-            mode = b.get("mode", "both")
-            if mode not in ("both", "exam", "lesson") or b.get("qtype", "mcq") not in ("mcq", "essay", "mixed"):
-                raise ValueError("Lựa chọn không hợp lệ")
-            if not (1 <= n <= 100 and 1 <= minutes <= 300):
-                raise ValueError("Số câu 1-100, thời gian 1-300 phút")
+            n, minutes, qtype, notes, mode = self.gen_params(b)
             fp = docs_fingerprint(b["docs"])
-            with db() as c:
-                rows = c.execute("SELECT questions FROM exams WHERE user_id=? AND docs_hash=? ORDER BY id DESC",
-                                 (u["id"], fp)).fetchall()
-            # shortcut: chỉ gửi 150 câu gần nhất cho prompt khỏi quá dài; cần hơn thì tóm tắt theo chủ đề
-            avoid = [q["question"] for r in rows for q in json.loads(r["questions"])][:150]
-            data = generate_exam(b["docs"], b.get("samples", []), n, b.get("qtype", "mcq"), b.get("notes", "").strip(), mode, avoid)
-            with db() as c:
-                cur = c.execute("INSERT INTO exams(user_id,title,duration_min,lesson,questions,docs_hash) VALUES(?,?,?,?,?,?)",
-                                (u["id"], data.get("title", "Đề kiểm tra"), minutes, data.get("lesson", ""),
-                                 json.dumps(data["questions"], ensure_ascii=False), fp))
-            return self.send(200, {"id": cur.lastrowid})
+            data = generate_exam(b["docs"], b.get("samples", []), n, qtype, notes, mode, self.avoid_list(u, fp))
+            return self.send(200, {"id": self.save_exam(u, data, minutes, fp)})
         if action == "submit":
             e = self.get_exam(u, id_)
             qs = json.loads(e["questions"])
@@ -374,6 +447,78 @@ class Handler(BaseHTTPRequestHandler):
         with db() as c:
             c.execute("DELETE FROM attempts WHERE exam_id=?", (id_,))
             c.execute("DELETE FROM exams WHERE id=?", (id_,))
+        self.send(200, {})
+
+    # ---------- Môn học: quét tài liệu một lần, ra đề nhiều lần từ bản ghi nhớ ----------
+    def get_subject(self, u, id_):
+        with db() as c:
+            s = c.execute("SELECT * FROM subjects WHERE id=? AND user_id=?", (id_, u["id"])).fetchone()
+        if not s:
+            raise ValueError("Không tìm thấy môn học")
+        return s
+
+    def subjects_get(self, u, id_, action, q):
+        with db() as c:
+            if id_ is None:
+                rows = c.execute("""SELECT s.id, s.name, s.created,
+                    (SELECT COUNT(*) FROM docs d WHERE d.subject_id=s.id AND d.kind='doc') n_docs,
+                    (SELECT COUNT(*) FROM docs d WHERE d.subject_id=s.id AND d.kind='sample') n_samples,
+                    (SELECT COUNT(*) FROM exams e WHERE e.subject_id=s.id) n_exams
+                    FROM subjects s WHERE user_id=? ORDER BY id DESC""", (u["id"],)).fetchall()
+                return self.send(200, [dict(r) for r in rows])
+            s = self.get_subject(u, id_)
+            docs = c.execute("SELECT id, kind, name, pages, digest, created FROM docs WHERE subject_id=? ORDER BY id",
+                             (id_,)).fetchall()
+        self.send(200, {"id": s["id"], "name": s["name"], "docs": [dict(d) for d in docs]})
+
+    def subjects_post(self, u, id_, action, q):
+        b = self.body()
+        if id_ is None:
+            name = b.get("name", "").strip()
+            if not 1 <= len(name) <= 100:
+                raise ValueError("Tên môn học 1-100 ký tự")
+            with db() as c:
+                sid = c.execute("INSERT INTO subjects(user_id,name) VALUES(?,?)", (u["id"], name)).lastrowid
+            return self.send(200, {"id": sid})
+        self.get_subject(u, id_)
+        if action == "docs":
+            kind = b.get("kind")
+            if kind not in DIGEST_PROMPT or not b.get("data"):
+                raise ValueError("Thiếu file hoặc loại tài liệu không hợp lệ")
+            # "file" là tên file thật (có đuôi để biết loại), "name" là tên hiển thị như "Lec 6. HYPOTHESIS TESTING"
+            digest = digest_doc({"name": b.get("file") or b.get("name", ""), "data": b["data"]}, kind)
+            with db() as c:
+                doc_id = c.execute("INSERT INTO docs(subject_id,kind,name,pages,digest) VALUES(?,?,?,?,?)",
+                                   (id_, kind, b.get("name", "")[:200], b.get("pages"), digest)).lastrowid
+            return self.send(200, {"id": doc_id})
+        if action == "generate":
+            n, minutes, qtype, notes, mode = self.gen_params(b)
+            ids = sorted({int(i) for i in b.get("doc_ids", [])}), sorted({int(i) for i in b.get("sample_ids", [])})
+            with db() as c:
+                rows = {r["id"]: r for r in c.execute("SELECT id, kind, name, digest FROM docs WHERE subject_id=?", (id_,))}
+            if not ids[0] or any(i not in rows for i in ids[0] + ids[1]):
+                raise ValueError("Chọn ít nhất một tài liệu của môn này")
+            fp = "mon:" + ",".join(map(str, ids[0]))  # cùng bộ tài liệu đã chọn -> tránh lặp câu của các đề trước
+            data = generate_from_notes([(rows[i]["name"], rows[i]["digest"]) for i in ids[0]],
+                                       [(rows[i]["name"], rows[i]["digest"]) for i in ids[1]],
+                                       n, qtype, notes, mode, self.avoid_list(u, fp))
+            return self.send(200, {"id": self.save_exam(u, data, minutes, fp, id_)})
+        self.send(404, {"error": "Không tìm thấy"})
+
+    def subjects_delete(self, u, id_, action, q):
+        self.get_subject(u, id_)
+        with db() as c:  # giữ lại các đề đã tạo, chỉ bỏ liên kết với môn
+            c.execute("UPDATE exams SET subject_id=NULL WHERE subject_id=?", (id_,))
+            c.execute("DELETE FROM docs WHERE subject_id=?", (id_,))
+            c.execute("DELETE FROM subjects WHERE id=?", (id_,))
+        self.send(200, {})
+
+    def docs_delete(self, u, id_, action, q):
+        with db() as c:
+            if not c.execute("SELECT 1 FROM docs d JOIN subjects s ON s.id=d.subject_id WHERE d.id=? AND s.user_id=?",
+                             (id_, u["id"])).fetchone():
+                raise ValueError("Không tìm thấy tài liệu")
+            c.execute("DELETE FROM docs WHERE id=?", (id_,))
         self.send(200, {})
 
     def attempts_get(self, u, id_, action, q):

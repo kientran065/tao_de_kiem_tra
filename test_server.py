@@ -19,7 +19,7 @@ assert "&lt;T&gt;" in doc and "Đáp án" in doc and "B" in doc
 # đề mẫu được lưu và đưa vào prompt (thay Claude bằng hàm giả)
 import base64
 seen = {}
-def fake_claude(prompt, cwd):
+def fake_claude(prompt, cwd, tools="Read"):
     seen["prompt"], seen["files"] = prompt, sorted(os.listdir(cwd))
     return json.dumps({"title": "T", "lesson": "# L", "questions": qs[:1]})
 real_claude, server.ask_claude = server.ask_claude, fake_claude
@@ -75,7 +75,7 @@ assert len(call("/api/attempts", cookie=alice)[1]) == 1 and call("/api/attempts"
 
 # tạo đề lần 2 từ cùng tài liệu: câu của đề trước được đưa vào prompt để tránh lặp
 made = []
-def fake_unique(prompt, cwd):
+def fake_unique(prompt, cwd, tools="Read"):
     made.append(prompt)
     return json.dumps({"title": "T", "lesson": "", "questions": [
         {"type": "mcq", "question": f"Câu số {len(made)}", "options": ["a", "b"], "answer": 0}]})
@@ -91,6 +91,43 @@ gen("khac.pdf", "tài liệu B", alice)  # tài liệu khác: không tránh
 assert "ĐÃ CÓ" not in made[-1]
 gen("slide.pdf", "tài liệu A", bob)  # người khác: không thấy đề của alice
 assert "ĐÃ CÓ" not in made[-1]
+server.ask_claude = real_claude
+
+# môn học: quét tài liệu một lần thành bản ghi nhớ, ra đề từ bản ghi nhớ (không đọc lại file, không dùng công cụ)
+calls = []
+def fake_subject(prompt, cwd, tools="Read"):
+    calls.append((prompt, tools, sorted(os.listdir(cwd))))
+    if "BẢN GHI NHỚ" in prompt:
+        return "## Ghi nhớ Lecture 6\nKiểm định: $Z = (\\bar x - \\mu_0)/(\\sigma/\\sqrt n)$ " + "x" * 50
+    if "đề kiểm tra mẫu" in prompt:
+        return "Đề mẫu gồm 2 câu. Câu 1: Tính $Z$ với n = 25. " + "y" * 50
+    return json.dumps({"title": "Đề môn", "lesson": "", "questions": [
+        {"type": "mcq", "question": f"Câu môn {len(calls)}", "options": ["a", "b"], "answer": 1}]})
+server.ask_claude = fake_subject
+s, r, _ = call("/api/subjects", {"name": "Thống kê toán"}, alice); sid = r["id"]
+assert call("/api/subjects", {"name": " "}, alice)[0] == 400
+s, d1, _ = call(f"/api/subjects/{sid}/docs", {"kind": "doc", "name": "Lec 6. HYPOTHESIS TESTING", "file": "Lec 6. HYPOTHESIS TESTING.pdf",
+                                               "data": b64("%PDF lec6"), "pages": 28}, alice)
+assert s == 200 and calls[-1][1] == "Read" and calls[-1][2] == ["tai_lieu_0.pdf"]
+s, d2, _ = call(f"/api/subjects/{sid}/docs", {"kind": "sample", "name": "de.pdf", "data": b64("%PDF de")}, alice)
+subj = call(f"/api/subjects/{sid}", cookie=alice)[1]
+assert [d["kind"] for d in subj["docs"]] == ["doc", "sample"] and "Ghi nhớ Lecture 6" in subj["docs"][0]["digest"]
+body = {"doc_ids": [d1["id"]], "sample_ids": [d2["id"]], "mode": "exam", "n_questions": 1, "duration_min": 5}
+s, e1, _ = call(f"/api/subjects/{sid}/generate", body, alice)
+prompt, tools, files = calls[-1]
+assert s == 200 and tools == "" and files == [], (tools, files)  # không đọc file, không công cụ
+assert "Ghi nhớ Lecture 6" in prompt and "Đề mẫu gồm 2 câu" in prompt and "ĐÃ CÓ" not in prompt
+call(f"/api/subjects/{sid}/generate", body, alice)
+assert "- Câu môn 3" in calls[-1][0]  # lần 2 tránh câu của lần 1
+assert call(f"/api/subjects/{sid}/generate", {**body, "doc_ids": [999]}, alice)[0] == 400
+assert call(f"/api/subjects/{sid}", cookie=bob)[0] == 400  # bob không thấy môn của alice
+assert call(f"/api/subjects/{sid}/generate", body, bob)[0] == 400
+assert call(f"/api/docs/{d1['id']}", cookie=bob, method="DELETE")[0] == 400
+lst = call("/api/subjects", cookie=alice)[1][0]
+assert (lst["n_docs"], lst["n_samples"], lst["n_exams"]) == (1, 1, 2)
+assert call(f"/api/docs/{d2['id']}", cookie=alice, method="DELETE")[0] == 200
+assert call(f"/api/subjects/{sid}", cookie=alice, method="DELETE")[0] == 200
+assert call(f"/api/exams/{e1['id']}", cookie=alice)[0] == 200  # xoá môn vẫn giữ đề đã tạo
 server.ask_claude = real_claude
 
 # mục chỉ có bài giảng: không làm bài, không tải đề được

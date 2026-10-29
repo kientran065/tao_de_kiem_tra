@@ -13,6 +13,9 @@
 <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;700&family=Patrick+Hand&display=swap&subset=vietnamese" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
 <style>
 /* Sáng = trang vở ô li (mực tím, lề đỏ). Tối = nền đen. */
 :root {
@@ -136,6 +139,12 @@ select option { background: var(--paper); color: var(--ink); }
 .files .fname { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .files .fsize { color: var(--muted); font-size: 13px; white-space: nowrap; }
 .files button { padding: 2px 8px; border: 0; background: none; color: var(--red); font-size: 18px; line-height: 1; }
+/* danh sách lecture tìm thấy khi cắt PDF */
+.parts { display: grid; gap: 4px; max-height: 420px; overflow-y: auto; padding: 2px; }
+.part { display: flex; align-items: baseline; gap: 10px; margin: 0; padding: 8px 10px; border-radius: 6px; background: var(--bg); font-size: 15px; font-weight: 400; cursor: pointer; }
+.part input { width: auto; flex: none; transform: translateY(2px); accent-color: var(--accent); }
+.part .ptitle { flex: 1; min-width: 0; font-weight: 500; overflow-wrap: anywhere; }
+.part .prange { color: var(--muted); font-size: 13px; white-space: nowrap; }
 .row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 14px; }
 @media (max-width: 560px) { .row { grid-template-columns: 1fr 1fr; } .sheet { padding: 22px 18px 22px 40px; } .sheet::before { left: 24px; } }
 
@@ -267,7 +276,18 @@ function paintThemeBtn(b) {
   b.setAttribute("aria-label", isDark() ? "Chuyển sang chế độ sáng" : "Chuyển sang chế độ tối");
 }
 const themeBtn = () => `<button class="link theme-btn" onclick="toggleTheme()"></button>`;
-const afterRender = () => document.querySelectorAll(".theme-btn").forEach(paintThemeBtn);
+const afterRender = () => {
+  document.querySelectorAll(".theme-btn").forEach(paintThemeBtn);
+  // công thức $...$ trong bài giảng, câu hỏi, bản ghi nhớ -> hiển thị toán học
+  window.renderMathInElement?.(app, { throwOnError: false,
+    delimiters: [{ left: "$$", right: "$$", display: true }, { left: "$", right: "$", display: false }] });
+};
+// Markdown có công thức: tạm giấu $...$ để marked không biến dấu _ trong công thức thành chữ nghiêng
+function md(text) {
+  const math = [];
+  const safe = text.replace(/\$\$[\s\S]+?\$\$|\$[^$\n]+?\$/g, m => `@@M${math.push(m) - 1}@@`);
+  return DOMPurify.sanitize(marked.parse(safe)).replace(/@@M(\d+)@@/g, (_, i) => esc(math[i]));
+}
 
 async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers: { "Content-Type": "application/json" }, body: opts.body && JSON.stringify(opts.body) });
@@ -300,12 +320,14 @@ function showFiles(key) {
     <span class="fsize">${fmtSize(f.size)}</span>
     <button type="button" onclick="picked.${key}.splice(${i},1);showFiles('${key}')" aria-label="Bỏ file ${esc(f.name)}">✕</button></li>`).join("");
 }
-function wirePicker(key) {
-  const box = $(`#${key}Drop`), input = $(`#${key}`);
-  input.onchange = () => { addFiles(key, input.files); input.value = ""; };
+function wireDrop(box, input, onFiles) {
+  input.onchange = () => { onFiles(input.files); input.value = ""; };
   box.ondragover = e => { e.preventDefault(); box.classList.add("over"); };
   box.ondragleave = () => box.classList.remove("over");
-  box.ondrop = e => { e.preventDefault(); box.classList.remove("over"); addFiles(key, e.dataTransfer.files); };
+  box.ondrop = e => { e.preventDefault(); box.classList.remove("over"); onFiles(e.dataTransfer.files); };
+}
+function wirePicker(key) {
+  wireDrop($(`#${key}Drop`), $(`#${key}`), files => addFiles(key, files));
   showFiles(key);
 }
 
@@ -318,15 +340,17 @@ const readFiles = files => Promise.all([...files].map(f => new Promise((ok, fail
 
 // ---------- Menu trái ----------
 // [mục, đường dẫn, nhãn đầy đủ, nhãn ngắn cho điện thoại]
-const MENU = [["create", "#/", "Tạo bài giảng / đề kiểm tra", "Tạo mới"], ["lessons", "#/lessons", "Bài giảng đã tạo", "Bài giảng"],
-  ["exams", "#/exams", "Bài kiểm tra đã tạo", "Bài kiểm tra"]];
+const MENU = [["create", "#/", "Tạo bài giảng / đề kiểm tra", "Tạo mới"], ["subjects", "#/subjects", "Môn học", "Môn học"],
+  ["lessons", "#/lessons", "Bài giảng đã tạo", "Bài giảng"],
+  ["exams", "#/exams", "Bài kiểm tra đã tạo", "Bài kiểm tra"], ["cut", "#/cut", "Cắt file PDF", "Cắt PDF"]];
 // trang con thuộc mục menu nào
-const SECTION = { lessons: "lessons", lesson: "lessons", exams: "exams", exam: "exams", result: "exams" };
+const SECTION = { lessons: "lessons", lesson: "lessons", exams: "exams", exam: "exams", result: "exams", cut: "cut",
+  subjects: "subjects", subject: "subjects" };
 let items = [];  // danh sách đã soạn, dùng cho số đếm trên menu và các trang danh sách
 
 function renderNav(page) {
   const active = SECTION[page] || "create";
-  const count = { lessons: items.filter(e => e.has_lesson).length, exams: items.filter(e => e.n).length };
+  const count = { subjects: subjects.length, lessons: items.filter(e => e.has_lesson).length, exams: items.filter(e => e.n).length };
   $("#side").innerHTML = `
     <a class="brand" href="#/"><b>Học & Kiểm tra</b><span>vở ôn bài</span></a>
     <ul class="menu">${MENU.map(([k, href, label, short]) => `<li><a href="${href}" ${k === active ? 'aria-current="page"' : ""}>
@@ -362,28 +386,54 @@ async function logout() { await api("/api/logout", { method: "POST" }); me = nul
 const MODES = { both: "Bài giảng + đề", exam: "Chỉ đề kiểm tra", lesson: "Chỉ bài giảng" };
 const SUBMIT = { both: "Soạn bài giảng và đề", exam: "Soạn đề kiểm tra", lesson: "Soạn bài giảng" };
 
+// các ô lựa chọn dùng chung cho trang Tạo nhanh và trang Môn học
+const modesHtml = () => `<div class="label" id="modeLbl">Bạn cần gì?</div>
+  <div class="modes" role="radiogroup" aria-labelledby="modeLbl">${Object.entries(MODES).map(([k, v], i) =>
+    `<label><input type="radio" name="mode" value="${k}" ${i ? "" : "checked"}><span>${v}</span></label>`).join("")}</div>`;
+const optionsRow = () => `<div class="row">
+  <div><label for="n">Số câu</label><input id="n" type="number" min="1" max="100" value="10" required></div>
+  <div><label for="t">Thời gian (phút)</label><input id="t" type="number" min="1" max="300" value="15" required></div>
+  <div><label for="qt">Loại câu hỏi</label><select id="qt">
+    <option value="mcq">Trắc nghiệm</option><option value="essay">Tự luận</option><option value="mixed">Kết hợp</option></select></div></div>`;
+const notesHtml = `<label for="notes">Yêu cầu thêm <span class="hint">(không bắt buộc)</span></label>
+  <textarea id="notes" placeholder="VD: độ khó như đề giữa kỳ, tự luận dạng điền đáp án làm tròn 3 chữ số"></textarea>`;
+const genOptions = mode => ({ mode, n_questions: +$("#n").value, duration_min: +$("#t").value, qtype: $("#qt").value, notes: $("#notes").value });
+// trả về hàm đọc chế độ đang chọn; ẩn .exam-only khi chỉ soạn bài giảng
+function wireModes(form) {
+  const mode = () => form.querySelector("[name=mode]:checked").value;
+  form.querySelectorAll("[name=mode]").forEach(r => r.onchange = () => {
+    form.querySelectorAll(".exam-only").forEach(x => x.classList.toggle("hidden", mode() === "lesson"));
+    $("#genBtn").textContent = SUBMIT[mode()];
+  });
+  return mode;
+}
+// chạy việc gọi Claude: khoá nút, đếm giây, báo lỗi; xong thì mở bài vừa tạo
+async function runGen(text, call) {
+  const btn = $("#genBtn"), wait = $("#wait"), started = Date.now();
+  btn.disabled = true; wait.classList.remove("hidden"); $("#err").textContent = "";
+  const tick = () => wait.textContent = `${text} (${Math.round((Date.now() - started) / 1000)} giây). Đừng đóng trang.`;
+  tick(); const iv = setInterval(tick, 1000);
+  try { location.hash = `#/lesson/${(await call()).id}`; }
+  catch (x) { $("#err").textContent = x.message; btn.disabled = false; wait.classList.add("hidden"); }
+  finally { clearInterval(iv); }
+}
+
 async function renderCreate() {
   app.innerHTML = `
   <form class="sheet" id="gen">
     <h2>Tạo bài giảng / đề kiểm tra</h2>
     <p class="lede">Gửi tài liệu học, Claude sẽ đọc và soạn cho bạn.</p>
-    <div class="label" id="modeLbl">Bạn cần gì?</div>
-    <div class="modes" role="radiogroup" aria-labelledby="modeLbl">${Object.entries(MODES).map(([k, v], i) =>
-      `<label><input type="radio" name="mode" value="${k}" ${i ? "" : "checked"}><span>${v}</span></label>`).join("")}</div>
+    <p class="note" style="margin:0 0 4px">Học cả một môn? <a href="#/subjects">Tạo môn học</a>: tài liệu chỉ quét một lần, các lần ra đề sau tốn ít lượt Claude hơn nhiều.</p>
+    ${modesHtml()}
     <div class="label">Tài liệu học <span class="hint">(PDF, DOCX, TXT, MD; thêm bao nhiêu file cũng được)</span></div>
     ${dropBox("docs", "tài liệu")}
+    <p class="hint" style="margin:6px 0 0;font-size:14px">Giáo trình quá dài? <a href="#/cut">Cắt lấy các lecture cần học</a> để Claude đọc nhanh hơn và tốn ít lượt hơn.</p>
     <div class="exam-only">
       <div class="label">Đề mẫu <span class="hint">(không bắt buộc, Claude sẽ ra đề theo phong cách này)</span></div>
       ${dropBox("samples", "đề mẫu")}
-      <div class="row">
-        <div><label for="n">Số câu</label><input id="n" type="number" min="1" max="100" value="10" required></div>
-        <div><label for="t">Thời gian (phút)</label><input id="t" type="number" min="1" max="300" value="15" required></div>
-        <div><label for="qt">Loại câu hỏi</label><select id="qt">
-          <option value="mcq">Trắc nghiệm</option><option value="essay">Tự luận</option><option value="mixed">Kết hợp</option></select></div>
-      </div>
+      ${optionsRow()}
     </div>
-    <label for="notes">Yêu cầu thêm <span class="hint">(không bắt buộc)</span></label>
-    <textarea id="notes" placeholder="VD: chỉ lấy lecture 6 và 7, độ khó như đề giữa kỳ"></textarea>
+    ${notesHtml}
     <div class="actions"><button class="primary" id="genBtn">${SUBMIT.both}</button></div>
     <div class="wait hidden" id="wait" role="status"></div>
     <div class="err" id="err" role="alert"></div>
@@ -392,31 +442,186 @@ async function renderCreate() {
 
   const form = $("#gen");
   wirePicker("docs"); wirePicker("samples");
-  const mode = () => form.querySelector("[name=mode]:checked").value;
-  form.querySelectorAll("[name=mode]").forEach(r => r.onchange = () => {
-    form.querySelector(".exam-only").classList.toggle("hidden", mode() === "lesson");
-    $("#genBtn").textContent = SUBMIT[mode()];
-  });
+  const mode = wireModes(form);
 
-  form.onsubmit = async e => {
+  form.onsubmit = e => {
     e.preventDefault();
     const samples = mode() === "lesson" ? [] : picked.samples;
     const total = [...picked.docs, ...samples].reduce((s, f) => s + f.size, 0);
     if (!picked.docs.length) { $("#err").textContent = "Thêm ít nhất một file tài liệu học."; return; }
     if (total > MAX_MB * 1048576) { $("#err").textContent = `Tổng dung lượng ${fmtSize(total)} vượt giới hạn ${MAX_MB} MB. Bỏ bớt file hoặc tách lấy phần cần học.`; return; }
-    const btn = $("#genBtn"), wait = $("#wait"), started = Date.now();
-    btn.disabled = true; wait.classList.remove("hidden"); $("#err").textContent = "";
-    const tick = () => wait.textContent = `Claude đang đọc tài liệu và soạn bài (${Math.round((Date.now() - started) / 1000)} giây). Thường mất 1–5 phút, đừng đóng trang.`;
-    tick(); const iv = setInterval(tick, 1000);
-    try {
+    runGen("Claude đang đọc tài liệu và soạn bài, thường mất 1–5 phút", async () => {
       const r = await api("/api/exams", { method: "POST", body: {
-        mode: mode(), docs: await readFiles(picked.docs), samples: await readFiles(samples),
-        n_questions: +$("#n").value, duration_min: +$("#t").value, qtype: $("#qt").value, notes: $("#notes").value } });
+        ...genOptions(mode()), docs: await readFiles(picked.docs), samples: await readFiles(samples) } });
       picked.docs = []; picked.samples = [];
-      location.hash = `#/lesson/${r.id}`;
-    } catch (x) { $("#err").textContent = x.message; btn.disabled = false; wait.classList.add("hidden"); }
-    finally { clearInterval(iv); }
+      return r;
+    });
   };
+}
+
+// ---------- Môn học ----------
+let subjects = [];
+async function renderSubjects() {
+  app.innerHTML = `<h2 class="page-title">Môn học</h2>
+  <p class="lede">Mỗi môn lưu sẵn tài liệu đã quét. Tài liệu chỉ quét một lần, các lần ra đề sau dùng lại nên nhanh hơn và tốn ít lượt Claude hơn.</p>
+  <form class="sheet" id="newSubj" style="padding-top:18px;padding-bottom:18px">
+    <label for="sname" style="margin-top:0">Tạo môn học mới</label>
+    <div style="display:flex;gap:10px;flex-wrap:wrap"><input id="sname" maxlength="100" placeholder="VD: Thống kê toán" required style="flex:1 1 220px">
+      <button class="primary">Tạo môn</button></div>
+    <div class="err" id="err" role="alert"></div>
+  </form>
+  <div class="rows">${subjects.length ? subjects.map(s => `
+    <a class="rowi hist" href="#/subject/${s.id}"><div><h3>${esc(s.name)}</h3>
+      <div class="meta">${s.n_docs} tài liệu, ${s.n_samples} đề mẫu, đã ra ${s.n_exams} đề</div></div></a>`).join("")
+    : `<p class="empty">Chưa có môn học nào. Đặt tên môn ở trên để bắt đầu.</p>`}</div>`;
+  $("#newSubj").onsubmit = async e => {
+    e.preventDefault();
+    try { location.hash = `#/subject/${(await api("/api/subjects", { method: "POST", body: { name: $("#sname").value } })).id}`; }
+    catch (x) { $("#err").textContent = x.message; }
+  };
+}
+
+let pend = [], pendFor = null;  // file chờ quét ở trang môn học: { file, kind, pages, parts: [{title, from, to, on}] }
+async function renderSubject(id) {
+  if (pendFor !== id) { pend = []; pendFor = id; }
+  const s = await api(`/api/subjects/${id}`);
+  const docs = s.docs.filter(d => d.kind === "doc"), samples = s.docs.filter(d => d.kind === "sample");
+  const docRow = d => `<div class="part" style="align-items:flex-start">
+      <input type="checkbox" class="${d.kind}-pick" value="${d.id}" aria-label="Chọn ${esc(d.name)}" ${d.kind === "doc" ? "checked" : ""}>
+      <div style="flex:1;min-width:0"><span class="ptitle">${esc(d.name)}</span>
+        <div class="meta">${d.pages ? d.pages + " trang, " : ""}quét lúc ${esc(d.created)}</div>
+        <details><summary class="link" style="cursor:pointer;padding:2px 0">Xem bản ghi nhớ</summary>
+          <div class="lesson" style="font-size:15px">${md(d.digest)}</div></details></div>
+      <button type="button" class="link danger" onclick="delDoc(${d.id})" aria-label="Xoá ${esc(d.name)}">Xoá</button></div>`;
+  app.innerHTML = `<div class="list-head"><h2>${esc(s.name)}</h2><button class="link danger" onclick="delSubject(${id})">Xoá môn</button></div>
+  <p class="lede">Tick các tài liệu cần dùng rồi ra đề. Claude chỉ đọc bản ghi nhớ đã lưu, không đọc lại file.</p>
+  <form class="sheet" id="gen">
+    <h3>Tài liệu đã quét</h3>
+    ${docs.length ? `<div class="parts" style="margin-top:10px">${docs.map(docRow).join("")}</div>`
+      : `<p class="meta">Chưa có tài liệu. Thêm ở phần bên dưới.</p>`}
+    <div class="exam-only"><h3 style="margin-top:22px">Đề mẫu đã quét <span class="hint">(tick để ra đề theo phong cách này)</span></h3>
+      ${samples.length ? `<div class="parts" style="margin-top:10px">${samples.map(docRow).join("")}</div>` : `<p class="meta">Chưa có đề mẫu.</p>`}</div>
+    ${modesHtml()}
+    <div class="exam-only">${optionsRow()}</div>
+    ${notesHtml}
+    <div class="actions"><button class="primary" id="genBtn" ${docs.length ? "" : "disabled"}>${SUBMIT.both}</button></div>
+    <div class="wait hidden" id="wait" role="status"></div>
+    <div class="err" id="err" role="alert"></div>
+  </form>
+  <div class="sheet">
+    <h3>Thêm tài liệu vào môn</h3>
+    <p class="meta">Mỗi file (hoặc mỗi lecture bạn chọn) được Claude đọc một lần, mất khoảng 1–2 phút, rồi lưu lại để dùng mãi.</p>
+    <div class="modes" role="radiogroup" aria-label="Loại file" style="margin-top:12px">
+      <label><input type="radio" name="kind" value="doc" checked><span>Tài liệu học</span></label>
+      <label><input type="radio" name="kind" value="sample"><span>Đề mẫu</span></label></div>
+    <div class="drop" id="addDrop" style="margin-top:12px">
+      <input id="addFile" type="file" multiple accept=".pdf,.docx,.txt,.md" tabindex="-1" aria-hidden="true">
+      <div class="drop-bar"><button type="button" onclick="$('#addFile').click()">Thêm file</button><span>hoặc kéo thả vào đây</span></div>
+      <div id="pendList"></div></div>
+    <div class="actions"><button class="primary" id="scanBtn">Quét và lưu</button></div>
+    <div class="wait hidden" id="scanWait" role="status"></div>
+    <div class="err" id="scanErr" role="alert"></div>
+  </div>`;
+  afterRender();
+  const mode = wireModes($("#gen"));
+  $("#gen").onsubmit = e => {
+    e.preventDefault();
+    const ids = cls => [...document.querySelectorAll(`.${cls}-pick:checked`)].map(c => +c.value);
+    if (!ids("doc").length) { $("#err").textContent = "Tick ít nhất một tài liệu."; return; }
+    runGen("Claude đang soạn từ bản ghi nhớ, thường nhanh hơn tạo từ file", () => api(`/api/subjects/${id}/generate`,
+      { method: "POST", body: { ...genOptions(mode()), doc_ids: ids("doc"), sample_ids: mode() === "lesson" ? [] : ids("sample") } }));
+  };
+  wireDrop($("#addDrop"), $("#addFile"), files => addPending(files));
+  showPending();
+  $("#scanBtn").onclick = () => scanPending(id);
+}
+
+async function addPending(files) {
+  const kind = document.querySelector("[name=kind]:checked").value, err = $("#scanErr"), wait = $("#scanWait");
+  err.textContent = "";
+  for (const file of files) {
+    if (!/\.(pdf|docx|txt|md)$/i.test(file.name)) { err.textContent = `Bỏ qua ${file.name}: chỉ nhận PDF, DOCX, TXT, MD.`; continue; }
+    const item = { file, kind, pages: null, parts: [] };
+    if (/\.pdf$/i.test(file.name)) {
+      wait.classList.remove("hidden"); wait.textContent = `Đang đọc ${file.name}…`;
+      try {
+        await ensurePdfLibs();
+        item.bytes = new Uint8Array(await file.arrayBuffer());
+        const doc = await pdfjsLib.getDocument({ data: item.bytes.slice() }).promise;
+        item.pages = doc.numPages;
+        // tài liệu học dài: tách theo lecture để chỉ quét phần cần; đề mẫu giữ nguyên
+        if (kind === "doc") {
+          let parts = await outlineParts(doc).catch(() => []);
+          if (parts.length < 2) parts = await textParts(doc, (i, n) => wait.textContent = `Đang tìm lecture trong ${file.name}: trang ${i}/${n}…`);
+          if (parts.length >= 2) item.parts = parts.map(p => ({ ...p, on: false }));
+        }
+        doc.destroy();
+      } catch (x) { err.textContent = `Không đọc được ${file.name}: ${x.message}`; continue; }
+      finally { wait.classList.add("hidden"); }
+    }
+    pend.push(item);
+  }
+  showPending();
+}
+
+function showPending() {
+  const box = $("#pendList");
+  if (!box) return;
+  box.innerHTML = pend.map((it, i) => `<div style="margin-top:10px">
+    <div class="files"><li><span class="fname">${it.kind === "sample" ? "Đề mẫu: " : ""}${esc(it.file.name)}</span>
+      <span class="fsize">${it.pages ? it.pages + " trang, " : ""}${fmtSize(it.file.size)}</span>
+      <button type="button" onclick="pend.splice(${i},1);showPending()" aria-label="Bỏ ${esc(it.file.name)}">✕</button></li></div>
+    ${it.parts.length ? `<p class="meta" style="margin:6px 0">Tìm thấy ${it.parts.length} lecture. Chọn lecture cần quét (mỗi lecture lưu thành một tài liệu); không chọn gì thì quét cả file.</p>
+      <div class="parts">${it.parts.map((p, j) => `<label class="part"><input type="checkbox" ${p.on ? "checked" : ""}
+        onchange="pend[${i}].parts[${j}].on=this.checked;sumPending()"><span class="ptitle">${esc(p.title)}</span>
+        <span class="prange">trang ${p.from}–${p.to}</span></label>`).join("")}</div>` : ""}</div>`).join("");
+  sumPending();
+}
+// mỗi việc quét: một lecture đã chọn, hoặc cả file nếu không chọn lecture nào
+const pendingJobs = () => pend.flatMap(it => {
+  const on = it.parts.filter(p => p.on);
+  return on.length ? on.map(p => ({ it, part: p })) : [{ it, part: null }];
+});
+function sumPending() {
+  const n = pend.length ? pendingJobs().length : 0;
+  $("#scanBtn").textContent = n ? `Quét và lưu (${n} mục)` : "Quét và lưu";
+  $("#scanBtn").disabled = !n;
+}
+
+async function scanPending(id) {
+  const jobs = pendingJobs(), wait = $("#scanWait"), err = $("#scanErr"), fails = [];
+  $("#scanBtn").disabled = true; wait.classList.remove("hidden"); err.textContent = "";
+  let done = 0;
+  const one = async ({ it, part }) => {
+    const name = part ? part.title : it.file.name;
+    try {
+      const file = part ? new File([await cutPdf(it.bytes, Array.from({ length: part.to - part.from + 1 }, (_, k) => part.from + k))],
+        name.replace(/[\\/:*?"<>|]/g, " ") + ".pdf") : it.file;
+      const [f] = await readFiles([file]);
+      await api(`/api/subjects/${id}/docs`, { method: "POST",
+        body: { kind: it.kind, name, file: file.name, data: f.data, pages: part ? part.to - part.from + 1 : it.pages } });
+    } catch (x) { fails.push(`${name}: ${x.message}`); }
+    wait.textContent = `Đã quét ${++done}/${jobs.length}. Mỗi mục mất khoảng 1–2 phút, đừng đóng trang.`;
+  };
+  wait.textContent = `Đang quét 0/${jobs.length}. Mỗi mục mất khoảng 1–2 phút, đừng đóng trang.`;
+  // quét 2 mục cùng lúc cho nhanh mà không dồn quá nhiều lượt Claude một lúc
+  const queue = [...jobs];
+  await Promise.all([0, 1].map(async () => { while (queue.length) await one(queue.shift()); }));
+  pend = [];
+  if (location.hash !== `#/subject/${id}`) return;
+  await route();
+  if (fails.length) $("#scanErr").textContent = "Không quét được: " + fails.join("; ");
+}
+
+async function delDoc(docId) {
+  if (!confirm("Xoá tài liệu này khỏi môn? Bản ghi nhớ sẽ mất, muốn dùng lại phải quét lại.")) return;
+  await api(`/api/docs/${docId}`, { method: "DELETE" });
+  route();
+}
+async function delSubject(id) {
+  if (!confirm("Xoá môn học này cùng mọi tài liệu đã quét? Các đề đã tạo vẫn được giữ.")) return;
+  await api(`/api/subjects/${id}`, { method: "DELETE" });
+  location.hash = "#/subjects";
 }
 
 async function delItem(id) {
@@ -470,7 +675,7 @@ async function renderLesson(id) {
   const e = await api(`/api/exams/${id}`);
   const n = e.questions.length;
   app.innerHTML = `<article class="sheet">
-    ${e.lesson ? `<div class="lesson">${DOMPurify.sanitize(marked.parse(e.lesson))}</div>`
+    ${e.lesson ? `<div class="lesson">${md(e.lesson)}</div>`
       : `<h2>${esc(e.title)}</h2><p class="lede">Đề đã sẵn sàng: ${n} câu, làm trong ${e.duration_min} phút. Đồng hồ bắt đầu chạy khi bạn bấm Làm bài.</p>`}
     <div class="actions">
       ${n ? `<a class="btn primary" href="#/exam/${id}">Làm bài (${n} câu, ${e.duration_min} phút)</a>
@@ -548,15 +753,217 @@ async function renderResult(id) {
   afterRender();
 }
 
+// ---------- Cắt PDF (chạy hoàn toàn trong trình duyệt, không gửi file lên server, không tốn lượt Claude) ----------
+const PDFJS = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/";
+const loadScript = src => new Promise((ok, fail) => {
+  const s = document.createElement("script");
+  s.src = src; s.onload = ok;
+  s.onerror = () => fail(new Error("Không tải được thư viện đọc PDF. Kiểm tra kết nối mạng rồi thử lại."));
+  document.head.append(s);
+});
+let pdfLibs = null;  // chỉ tải thư viện PDF khi mở trang cắt
+const ensurePdfLibs = () => pdfLibs ||= Promise.all([loadScript(PDFJS + "pdf.min.js"),
+    loadScript("https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js")])
+  .then(() => { pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS + "pdf.worker.min.js"; })
+  .catch(e => { pdfLibs = null; throw e; });
+
+// "1-12, 30-45, 50" -> [1..12, 30..45, 50]
+function parseRanges(text, n) {
+  const pages = new Set();
+  for (const part of text.replace(/\s*[-–]\s*/g, "-").split(/[,;\s]+/).filter(Boolean)) {
+    const m = part.match(/^(\d+)(?:-(\d+))?$/);
+    if (!m) throw new Error(`Không hiểu "${part}". Viết số trang như: 1-12, 30-45, 50`);
+    const a = +m[1], b = +(m[2] || m[1]);
+    if (a < 1 || b > n || a > b) throw new Error(`Khoảng "${part}" không hợp lệ: file chỉ có ${n} trang.`);
+    for (let p = a; p <= b; p++) pages.add(p);
+  }
+  return [...pages].sort((x, y) => x - y);
+}
+// [1,2,3,5,7,8] -> "1-3, 5, 7-8"
+const rangesText = pages => pages.reduce((r, p) => {
+  const last = r[r.length - 1];
+  last && p === last[1] + 1 ? last[1] = p : r.push([p, p]);
+  return r;
+}, []).map(([a, b]) => a === b ? `${a}` : `${a}-${b}`).join(", ");
+
+// Nhãn lecture của từng trang ({key, title} hoặc null) -> các phần liền nhau. Trang không nhãn thuộc phần trước nó,
+// nên chạy được cả khi "Lecture 6" chỉ in ở trang đầu lẫn khi in ở chân mọi slide.
+function partsFromLabels(labels) {
+  const parts = []; let cur = null;
+  labels.forEach((l, i) => {
+    if (l && (!cur || cur.key !== l.key)) parts.push(cur = { key: l.key, title: l.title, from: i + 1, to: i + 1 });
+    else if (cur) cur.to = i + 1;
+  });
+  return parts;
+}
+
+async function outlineParts(doc) {
+  let items = await doc.getOutline();
+  if (!items || !items.length) return [];
+  while (items.length === 1 && items[0].items?.length) items = items[0].items;  // bỏ tầng chỉ có tên sách
+  const starts = [];
+  for (const it of items) {
+    try {
+      const d = typeof it.dest === "string" ? await doc.getDestination(it.dest) : it.dest;
+      if (!d) continue;
+      starts.push({ title: it.title, from: (typeof d[0] === "object" ? await doc.getPageIndex(d[0]) : d[0]) + 1 });
+    } catch {}  // bookmark hỏng: bỏ qua
+  }
+  starts.sort((a, b) => a.from - b.from);
+  return starts.map((s, i) => ({ ...s, to: (starts[i + 1]?.from ?? doc.numPages + 1) - 1 })).filter(s => s.to >= s.from);
+}
+
+// dòng BẮT ĐẦU bằng "Lecture 6", "Lec01.", "Chương 3"... (tiêu đề hoặc footer), không bắt câu "xem Lecture 9" giữa bài
+const LECTURE_RE = /^(lecture|lec|chapter|lesson|unit|week|chương|bài|tuần)\.?\s*([0-9]{1,3}|[IVXLC]{1,6})\b/i;
+const KIND = { lec: "lecture" };
+const labelsIn = lines => lines.map(s => [s, s.match(LECTURE_RE)]).filter(([, m]) => m).map(([s, m]) => {
+  const kind = m[1].toLowerCase(), num = /\d/.test(m[2]) ? String(+m[2]) : m[2].toUpperCase();
+  return { key: `${KIND[kind] || kind} ${num}`, title: s.length > 80 ? s.slice(0, 77) + "…" : s };  // "Lec01" = "Lecture 1"
+});
+// nhãn lấy từ 3 dòng đầu + 3 dòng cuối trang (tiêu đề, footer); trang nhắc từ 3 lecture trở lên là trang mục lục
+function pageLabel(lines) {
+  if (new Set(labelsIn(lines).map(l => l.key)).size >= 3) return null;
+  return labelsIn([...lines.slice(0, 3), ...lines.slice(-3)])[0] || null;
+}
+async function textParts(doc, progress) {
+  const labels = [];
+  for (let i = 1; i <= doc.numPages; i++) {
+    if (i % 10 === 0) progress(i, doc.numPages);
+    labels.push(pageLabel((await (await doc.getPage(i)).getTextContent()).items.map(t => t.str.trim()).filter(Boolean)));
+  }
+  return partsFromLabels(labels);
+}
+
+async function cutPdf(bytes, pages) {
+  const src = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true });
+  const out = await PDFLib.PDFDocument.create();
+  (await out.copyPages(src, pages.map(p => p - 1))).forEach(p => out.addPage(p));
+  return out.save();
+}
+
+let cut = null;  // file đang cắt: { name, size, bytes, pages, parts, how, checked, ranges }
+
+function renderCut() {
+  app.innerHTML = `<div class="sheet">
+    <h2>Cắt file PDF</h2>
+    <p class="lede">Chọn các lecture cần học trong giáo trình dài để có file nhỏ hơn. File được cắt ngay trên máy bạn, không tốn lượt Claude.</p>
+    <div class="drop" id="cutDrop">
+      <input id="cutFile" type="file" accept=".pdf,application/pdf" tabindex="-1" aria-hidden="true">
+      <div class="drop-bar"><button type="button" onclick="$('#cutFile').click()">${cut ? "Chọn file khác" : "Chọn file PDF"}</button>
+        <span>hoặc kéo thả file PDF vào đây</span></div>
+    </div>
+    <div class="wait hidden" id="cutWait" role="status"></div>
+    <div class="err" id="err" role="alert"></div>
+    <div id="cutBody"></div></div>`;
+  wireDrop($("#cutDrop"), $("#cutFile"), files => files[0] && loadCut(files[0]));
+  if (cut) showCut();
+}
+
+async function loadCut(file) {
+  const wait = $("#cutWait");
+  $("#err").textContent = ""; $("#cutBody").innerHTML = "";
+  if (!/\.pdf$/i.test(file.name)) { $("#err").textContent = "Chỉ cắt được file PDF."; return; }
+  wait.classList.remove("hidden"); wait.textContent = "Đang mở file…";
+  try {
+    await ensurePdfLibs();
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const doc = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;  // pdf.js giữ bản sao, bytes để dành cho pdf-lib
+    let parts = await outlineParts(doc).catch(() => []), how = "mục lục (bookmark) của file";
+    if (parts.length < 2) {
+      parts = await textParts(doc, (i, n) => wait.textContent = `Đang tìm tiêu đề lecture: trang ${i}/${n}…`);
+      how = "tiêu đề Lecture, Chương, Bài… in trên trang";
+    }
+    cut = { name: file.name, size: file.size, bytes, pages: doc.numPages, parts, how, checked: new Set(), ranges: "" };
+    doc.destroy();
+    showCut();
+  } catch (x) {
+    cut = null;
+    if ($("#err")) $("#err").textContent = /password/i.test(x.message) ? "File PDF có mật khẩu, không cắt được." : "Không đọc được file PDF này. " + x.message;
+  } finally { wait.classList.add("hidden"); }
+}
+
+function showCut() {
+  const body = $("#cutBody");
+  if (!body) return;  // người dùng đã chuyển trang
+  body.innerHTML = `<p class="meta" style="margin:14px 0 0">${esc(cut.name)}: ${cut.pages} trang, ${fmtSize(cut.size)}</p>
+    <div class="label">Các phần tìm thấy <span class="hint">(theo ${cut.how})</span></div>
+    ${cut.parts.length ? `<div class="parts">${cut.parts.map((p, i) => `<label class="part">
+        <input type="checkbox" value="${i}" ${cut.checked.has(i) ? "checked" : ""}>
+        <span class="ptitle">${esc(p.title)}</span><span class="prange">trang ${p.from}–${p.to} (${p.to - p.from + 1} trang)</span></label>`).join("")}</div>`
+      : `<p class="meta">Không tìm thấy mục lục hay tiêu đề lecture trong file. Nhập số trang cần lấy ở ô dưới.</p>`}
+    <label for="cutRanges">Thêm trang theo số <span class="hint">(không bắt buộc)</span></label>
+    <input id="cutRanges" placeholder="VD: 1-12, 30-45, 50" value="${esc(cut.ranges)}" inputmode="numeric">
+    <p class="meta" id="cutSum" role="status"></p>
+    <div class="actions"><button class="primary" id="cutUse">Dùng để tạo bài giảng / đề</button><button id="cutSave">Tải file đã cắt</button></div>`;
+  body.querySelectorAll(".part input").forEach(c => c.onchange = () => {
+    c.checked ? cut.checked.add(+c.value) : cut.checked.delete(+c.value); sumCut();
+  });
+  $("#cutRanges").oninput = e => { cut.ranges = e.target.value; sumCut(); };
+  $("#cutUse").onclick = () => doCut(true);
+  $("#cutSave").onclick = () => doCut(false);
+  sumCut();
+}
+
+function selectedPages() {
+  const set = new Set(parseRanges(cut.ranges, cut.pages));
+  for (const i of cut.checked) for (let p = cut.parts[i].from; p <= cut.parts[i].to; p++) set.add(p);
+  return [...set].sort((a, b) => a - b);
+}
+function sumCut() {
+  try {
+    const p = selectedPages();
+    $("#cutSum").textContent = p.length ? `Đã chọn ${p.length}/${cut.pages} trang: ${rangesText(p)}.` : "Chưa chọn trang nào.";
+    $("#err").textContent = "";
+  } catch (x) { $("#cutSum").textContent = ""; $("#err").textContent = x.message; }
+}
+
+async function doCut(use) {
+  let pages;
+  try { pages = selectedPages(); } catch (x) { $("#err").textContent = x.message; return; }
+  if (!pages.length) { $("#err").textContent = "Chọn ít nhất một phần, hoặc nhập số trang cần lấy."; return; }
+  const wait = $("#cutWait"), btns = [$("#cutUse"), $("#cutSave")];
+  wait.classList.remove("hidden"); wait.textContent = "Đang cắt file…"; btns.forEach(b => b.disabled = true);
+  try {
+    const bytes = await cutPdf(cut.bytes, pages);
+    const tag = rangesText(pages).replace(/, /g, "_");
+    const name = `${cut.name.replace(/\.pdf$/i, "")}_trang_${tag.length > 40 ? pages.length : tag}.pdf`;
+    const file = new File([bytes], name, { type: "application/pdf" });
+    if (use) {
+      if (!picked.docs.some(f => f.name === file.name && f.size === file.size)) picked.docs.push(file);
+      location.hash = "#/";
+      return;
+    }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(file); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    wait.textContent = `Đã tạo ${name}: ${pages.length} trang, ${fmtSize(file.size)} (file gốc ${fmtSize(cut.size)}).`;
+  } catch (x) { $("#err").textContent = "Không cắt được file: " + x.message; wait.classList.add("hidden"); }
+  finally { btns.forEach(b => b.disabled = false); }
+}
+
+if (location.search.includes("selftest")) {  // tự kiểm tra: mở /?selftest rồi xem Console
+  console.assert(rangesText([1, 2, 3, 5, 7, 8]) === "1-3, 5, 7-8", "rangesText");
+  console.assert(JSON.stringify(parseRanges("3 - 5, 1 ;4", 10)) === "[1,3,4,5]", "parseRanges");
+  console.assert((() => { try { parseRanges("5-20", 10); } catch { return true; } })(), "parseRanges vượt số trang");
+  const L = (...lines) => pageLabel(lines);
+  console.assert(JSON.stringify(partsFromLabels([null, L("Lec01. INTRO"), null, L("Lecture 1"), L("LECTURE 2. CI"), null])
+    .map(p => [p.title, p.from, p.to])) === '[["Lec01. INTRO",2,4],["LECTURE 2. CI",5,6]]', "partsFromLabels");
+  console.assert(L("Slide", "see Lecture 9", "x", "Lecture 2").key === "lecture 2", "pageLabel bỏ câu nhắc giữa bài");
+  console.assert(L("Exercise - Lecture 04", "x") === null, "pageLabel bỏ trang bài tập cuối lecture");
+  console.assert(L("Mục lục", "Chương 1", "Chương 2", "Chương 3") === null, "pageLabel trang mục lục");
+  console.assert(L("CHƯƠNG iv. Ước lượng").key === "chương IV", "pageLabel số La Mã");
+  console.log("selftest xong");
+}
+
 // ---------- Điều hướng ----------
 async function route() {
   clearInterval(timerId); window.onbeforeunload = null;
   if (!me) { try { me = await api("/api/me"); } catch { return; } }
   const [, page, id] = location.hash.split("/");
   try {
-    items = await api("/api/exams");
+    [items, subjects] = await Promise.all([api("/api/exams"), api("/api/subjects")]);
     renderNav(page);
-    await ({ lessons: renderLessons, exams: renderExams, lesson: renderLesson, exam: renderExam, result: renderResult }[page] || renderCreate)(id);
+    await ({ subjects: renderSubjects, subject: renderSubject, cut: renderCut, lessons: renderLessons, exams: renderExams, lesson: renderLesson, exam: renderExam, result: renderResult }[page] || renderCreate)(id);
   } catch (x) { if (me) app.innerHTML = `<div class="sheet err">${esc(x.message)} <a href="#/">Về trang tạo bài</a></div>`; }
   afterRender();
   scrollTo(0, 0);
