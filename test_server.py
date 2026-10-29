@@ -5,6 +5,14 @@ import server
 server.DB_PATH = os.path.join(tempfile.mkdtemp(), "test.db")
 server.init_db()
 
+# tên tài liệu lỗi (ký tự NUL từ bookmark PDF) được dọn khi khởi động
+with server.db() as c:
+    c.execute("INSERT INTO docs(subject_id,kind,name,digest) VALUES(1,'doc',?,'x')", (" 8: Intervals\x00\x00\x00",))
+server.init_db()
+with server.db() as c:
+    assert c.execute("SELECT name FROM docs").fetchone()[0] == "8: Intervals"
+    c.execute("DELETE FROM docs")
+
 # chấm trắc nghiệm
 qs = [{"type": "mcq", "question": "1+1", "options": ["1", "2"], "answer": 1},
       {"type": "mcq", "question": "2+2", "options": ["4", "5"], "answer": 0},
@@ -13,6 +21,20 @@ total, res = server.grade(qs, [1, 1, ""])
 assert round(total, 2) == 3.33 and res[0]["correct"] and not res[1]["correct"] and res[2]["score"] == 0, (total, res)
 
 assert server.extract_json('Đây:\n```json\n{"a": [1]}\n```') == {"a": [1]}
+
+# câu điền đáp số: chấm trên máy, nhận dấu phẩy thập phân kiểu Moodle
+assert [server.parse_number(s) for s in ("4,183", "4.183", "-34,66", "1 250,5", "1,250.5", "1.250,5")] == [4.183, 4.183, -34.66, 1250.5, 1250.5, 1250.5]
+num = server.check_generated({"questions": [{"type": "numeric", "question": "Z?", "answer": "4.183", "tolerance": 0.01},
+                                            {"type": "numeric", "question": "p?", "answer": 0.129}]}, "exam")["questions"]
+assert num[0]["answer"] == 4.183 and num[1]["tolerance"] == 0.001  # thiếu sai số -> mặc định
+total, res = server.grade(num, ["4,19", "0,2"])
+assert res[0]["correct"] and not res[1]["correct"] and round(total, 2) == 5.0, res
+assert server.grade(num, ["abc", None])[0] == 0
+try:
+    server.check_generated({"questions": [{"type": "numeric", "question": "?", "answer": "khoảng 4"}]}, "exam"); assert False
+except ValueError:
+    pass
+assert "Answer:" in server.export_doc({"title": "T", "duration_min": 5, "questions": json.dumps(num)}, True).decode()
 doc = server.export_doc({"title": "<T>", "duration_min": 5, "questions": json.dumps(qs)}, True).decode()
 assert "&lt;T&gt;" in doc and "Đáp án" in doc and "B" in doc
 
@@ -26,7 +48,7 @@ real_claude, server.ask_claude = server.ask_claude, fake_claude
 b64 = lambda s: base64.b64encode(s.encode()).decode()
 for mode in ("both", "exam"):
     server.generate_exam([{"name": "a.txt", "data": b64("tài liệu")}], [{"name": "mau.pdf", "data": b64("%PDF")}], 5, "mcq", "", mode)
-    assert "de_mau_0.pdf" in seen["files"] and "de_mau_0.pdf" in seen["prompt"] and "bắt chước phong cách" in seen["prompt"], mode
+    assert "de_mau_0.pdf" in seen["files"] and "de_mau_0.pdf" in seen["prompt"] and "Bám sát đề mẫu" in seen["prompt"] and "statistical value" in seen["prompt"], mode
 server.generate_exam([{"name": "l6.pdf", "data": b64("%PDF 6")}, {"name": "l7.pdf", "data": b64("%PDF 7")},
                       {"name": "note.txt", "data": b64("ghi chú")}], [], 5, "mcq", "", "exam")
 assert {"tai_lieu_0.pdf", "tai_lieu_1.pdf", "tai_lieu_2.txt"} <= set(seen["files"])

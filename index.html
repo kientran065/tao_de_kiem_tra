@@ -223,6 +223,10 @@ button:disabled { opacity: .65; cursor: progress; }
 .opt input:checked + .bubble { background: var(--ink); border-color: var(--ink); color: var(--paper); }
 .opt input:focus-visible + .bubble { outline: 2px solid var(--accent); outline-offset: 2px; }
 .q textarea { margin-top: 10px; min-height: 140px; }
+.qtext { display: inline; } .qtext > :first-child { display: inline; } .qtext p { margin: 6px 0; }
+.qtext table { margin: 8px 0; }
+.numans { display: flex; align-items: center; gap: 10px; margin: 12px 0 0; font-size: 16px; font-weight: 400; }
+.numans input { width: 180px; }
 
 /* ---------- Kết quả ---------- */
 .result-top { display: flex; align-items: center; gap: 28px; flex-wrap: wrap; }
@@ -693,9 +697,10 @@ async function renderExam(id) {
       <h2>${esc(e.title)}</h2>
       <div class="paper-head"><span>${e.questions.length} câu</span><span>Thời gian làm bài: ${e.duration_min} phút</span></div>
       ${e.questions.map((q, i) => `<fieldset class="q" style="border:0;margin:0;padding-left:0;padding-right:0">
-        <legend style="display:contents"><span class="qn">Câu ${i + 1}.</span> ${esc(q.question)}</legend>
+        <legend style="display:contents"><span class="qn">Câu ${i + 1}.</span></legend>${qText(q)}
         ${q.type === "mcq" ? `<div class="opts">${q.options.map((o, j) => `<label class="opt">
             <input type="radio" name="q${i}" value="${j}"><span class="bubble">${ABC[j]}</span><span>${esc(o)}</span></label>`).join("")}</div>`
+          : q.type === "numeric" ? `<label class="numans">Answer: <input name="q${i}" inputmode="decimal" autocomplete="off" aria-label="Đáp số câu ${i + 1}"></label>`
           : `<textarea name="q${i}" aria-label="Bài làm câu ${i + 1}" placeholder="Viết bài làm ở đây"></textarea>`}</fieldset>`).join("")}
       <div class="actions"><button class="primary" id="submitBtn">Nộp bài</button></div>
       <div class="wait hidden" id="wait" role="status">Đang chấm bài…</div><div class="err" id="err" role="alert"></div>
@@ -730,6 +735,9 @@ async function renderExam(id) {
   form.onsubmit = ev => { ev.preventDefault(); if (confirm("Nộp bài bây giờ?")) submit(); };
 }
 
+// đề bài có thể có bảng số liệu (Markdown) và công thức
+const qText = q => `<div class="lesson qtext">${md(q.question)}</div>`;
+
 // ---------- Kết quả ----------
 async function renderResult(id) {
   const a = await api(`/api/attempts/${id}`);
@@ -740,15 +748,19 @@ async function renderResult(id) {
     <div class="actions"><a class="btn primary" href="#/exam/${a.exam_id}">Làm lại đề này</a><a class="link" href="#/exams">Xem các bài kiểm tra</a></div></div>
     <div class="sheet">${a.questions.map((q, i) => {
       const r = a.results[i], ans = a.answers[i];
-      const tick = q.type === "mcq" ? (r.correct ? `<span class="tick ok" aria-label="Đúng">✓</span>` : `<span class="tick bad" aria-label="Sai">✗</span>`) : "";
+      const auto = q.type === "mcq" || q.type === "numeric";  // chấm tự động: đúng/sai
+      const tick = auto ? (r.correct ? `<span class="tick ok" aria-label="Đúng">✓</span>` : `<span class="tick bad" aria-label="Sai">✗</span>`) : "";
       const body = q.type === "mcq"
         ? `<div class="opts">${q.options.map((o, j) => `<div class="opt static ${j === q.answer ? "right" : ""} ${j === ans ? "picked" : ""} ${j === ans && !r.correct ? "wrong" : ""}">
             <span class="bubble">${ABC[j]}</span><span>${esc(o)}${j === q.answer ? " (đáp án đúng)" : ""}</span></div>`).join("")}</div>
            ${ans == null ? `<div class="note">Bạn bỏ trống câu này.</div>` : ""}`
+        : q.type === "numeric"
+        ? `<div class="answer">Bạn trả lời: <b>${ans ? esc(ans) : "<i>bỏ trống</i>"}</b>
+            <span class="${r.correct ? "ok" : "bad"}">${r.correct ? "✓ Đúng" : `✗ Đáp số đúng: ${esc(q.answer)} (sai số cho phép ±${esc(q.tolerance)})`}</span></div>`
         : `<div class="answer"><span class="hint">Bài làm của bạn:</span><br>${ans ? esc(ans) : "<i>Bạn bỏ trống câu này.</i>"}</div>
            <div class="note"><b>${fmt(r.score)} / ${fmt(10 / a.questions.length)} điểm</b><br>${esc(r.feedback)}<br><br><span class="hint">Bài giải mẫu: ${esc(q.sample_answer)}</span></div>`;
-      return `<div class="q">${tick}<span class="qn">Câu ${i + 1}.</span> ${esc(q.question)}${body}
-        ${q.type === "mcq" && r.feedback ? `<div class="note">${esc(r.feedback)}</div>` : ""}</div>`;
+      return `<div class="q">${tick}<span class="qn">Câu ${i + 1}.</span>${qText(q)}${body}
+        ${auto && r.feedback ? `<div class="note">${esc(r.feedback)}</div>` : ""}</div>`;
     }).join("")}</div>`;
   afterRender();
 }
@@ -806,7 +818,7 @@ async function outlineParts(doc) {
     try {
       const d = typeof it.dest === "string" ? await doc.getDestination(it.dest) : it.dest;
       if (!d) continue;
-      starts.push({ title: it.title, from: (typeof d[0] === "object" ? await doc.getPageIndex(d[0]) : d[0]) + 1 });
+      starts.push({ title: it.title.replace(/[\x00-\x1f]/g, "").trim(), from: (typeof d[0] === "object" ? await doc.getPageIndex(d[0]) : d[0]) + 1 });
     } catch {}  // bookmark hỏng: bỏ qua
   }
   starts.sort((a, b) => a.from - b.from);

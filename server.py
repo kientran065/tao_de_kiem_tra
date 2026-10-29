@@ -39,6 +39,11 @@ def init_db():
                 c.execute(f"ALTER TABLE exams ADD COLUMN {col}")
             except sqlite3.OperationalError:
                 pass  # đã có cột
+        # dọn tên lỗi cũ (ký tự rác từ bookmark PDF); hàm replace của SQLite không xử lý được ký tự NUL nên làm bằng Python
+        for doc_id, name in c.execute("SELECT id, name FROM docs").fetchall():
+            clean = re.sub(r"[\x00-\x1f]", "", name or "").strip()
+            if clean != name:
+                c.execute("UPDATE docs SET name=? WHERE id=?", (clean, doc_id))
 
 
 def hash_pw(pw, salt):
@@ -146,23 +151,42 @@ Các câu hỏi dưới đây ĐÃ CÓ trong những đề trước tạo từ c
 không hỏi lại nguyên văn hay diễn đạt lại cùng một câu, câu tính toán không dùng lại bộ số liệu cũ.
 Ưu tiên những ý kiến thức trong tài liệu mà các câu này chưa hỏi tới.
 """ + "\n".join(f"- {q}" for q in avoid)) if avoid and mode != "lesson" else ""
-    types = {"mcq": 'chỉ trắc nghiệm ("mcq")', "essay": 'chỉ tự luận ("essay")',
-             "mixed": "kết hợp trắc nghiệm và tự luận (khoảng 70% trắc nghiệm)"}[qtype]
+    types = {"mcq": 'chỉ trắc nghiệm ("mcq")', "essay": 'chỉ câu tự trả lời ("numeric" hoặc "essay")',
+             "mixed": "kết hợp trắc nghiệm với câu tự trả lời (numeric/essay) theo đúng tỷ lệ của đề mẫu; không có đề mẫu thì khoảng 70% trắc nghiệm"}[qtype]
     return f"""
 Nhiệm vụ:
 1. {lesson_task}
-2. {f'''Tạo đúng {n_questions} câu hỏi kiểm tra, {types}, bám sát nội dung tài liệu.
-   Nếu có đề mẫu, bắt chước phong cách, độ khó và cách hỏi của đề mẫu.''' if mode != "lesson" else 'KHÔNG tạo câu hỏi: để "questions" là mảng rỗng [].'}
-{("Yêu cầu thêm của người dùng: " + notes) if notes else ""}
+2. {f'''Tạo đúng {n_questions} câu hỏi kiểm tra, {types}, bám sát nội dung tài liệu.{STYLE_RULES}''' if mode != "lesson" else 'KHÔNG tạo câu hỏi: để "questions" là mảng rỗng [].'}
+{("Yêu cầu thêm của người dùng (ưu tiên cao nhất): " + notes) if notes else ""}
 {avoid_task}
 
 CHỈ trả về một đối tượng JSON hợp lệ, không kèm chữ nào khác, theo đúng cấu trúc:
 {{"title": "tên đề", "lesson": "bài giảng markdown",
  "questions": [
   {{"type": "mcq", "question": "...", "options": ["...", "...", "...", "..."], "answer": 0, "explanation": "..."}},
+  {{"type": "numeric", "question": "...", "answer": 4.183, "tolerance": 0.01, "explanation": "cách tính"}},
   {{"type": "essay", "question": "...", "sample_answer": "...", "rubric": "tiêu chí chấm"}}
  ]}}
-Với mcq, "answer" là chỉ số (bắt đầu từ 0) của đáp án đúng trong "options"."""
+Với mcq, "answer" là chỉ số (bắt đầu từ 0) của đáp án đúng trong "options".
+Câu mà đáp án là MỘT con số (điền đáp số) PHẢI dùng "numeric": "answer" là số (dấu chấm thập phân), "tolerance" là sai số cho phép
+(tính tới việc làm tròn và tra bảng). Chỉ dùng "essay" khi cần trình bày lời giải hay lập luận."""
+
+
+STYLE_RULES = """
+   Bám sát đề mẫu và cách viết của giảng viên trong tài liệu (ưu tiên hơn cách viết quen thuộc của bạn):
+   - Viết đề bằng ngôn ngữ của đề mẫu. Dùng LẠI ĐÚNG thuật ngữ, cụm từ, cách hỏi mà đề mẫu và tài liệu dùng, kể cả khi chúng
+     khác cách dùng phổ biến (ví dụ tài liệu viết "statistical value", "significant level" thì không đổi thành
+     "test statistic", "significance level").
+   - Nếu đề mẫu cùng chủ đề với tài liệu: làm đề SONG SONG, câu thứ i cùng kiểu với câu thứ i của đề mẫu (cùng kỹ năng,
+     dạng câu, cách trình bày) nhưng đổi bối cảnh và số liệu. Nếu khác chủ đề: giữ số câu từng dạng, cách hỏi, văn phong;
+     nội dung lấy từ tài liệu.
+   - Đặt câu hỏi qua tình huống thực tế và nhận định cần kiểm tra như đề mẫu và bài tập trong tài liệu, không viết trừu tượng
+     kiểu "X ~ N(μ, σ²)" nếu đề mẫu không làm vậy. Dữ liệu nhiều nhóm thì trình bày bằng bảng Markdown; có thể cho vài câu
+     dùng chung một bảng dữ liệu.
+   - Phương án trắc nghiệm viết theo đúng khuôn mẫu phương án của đề mẫu.
+   - Đề mẫu không cho sẵn giá trị tra bảng (giá trị tới hạn, xác suất) thì KHÔNG cho; người làm bài tự tra.
+   - Giữ tỷ lệ câu khái niệm / tính toán / kết luận và độ khó như đề mẫu; không thêm lý thuyết nâng cao mà đề mẫu không hỏi.
+   - Đáp án đúng của các câu trắc nghiệm phân bố đều giữa các vị trí A, B, C, D."""
 
 
 def generate_exam(docs, samples, n_questions, qtype, notes, mode="both", avoid=()):
@@ -196,11 +220,16 @@ DIGEST_PROMPT = {
 ra đề kiểm tra và viết bài giảng mà KHÔNG cần đọc lại file:
 - Giữ ĐỦ mọi định nghĩa, công thức (viết bằng LaTeX gọn trong $...$), định lý và điều kiện áp dụng, bảng giá trị quan trọng.
 - Giữ các ví dụ có số liệu kèm lời giải tóm tắt, và liệt kê các dạng bài tập có trong file.
-- Bỏ lời dẫn, trang trí, nội dung lặp lại. Viết cô đọng bằng tiếng Việt, giữ thuật ngữ gốc trong ngoặc khi cần.
+- CHÉP NGUYÊN VĂN, đúng ngôn ngữ gốc, đề bài của các ví dụ và bài tập (đề thi thường viết theo đúng giọng này).
+- Có một mục "Thuật ngữ và cách diễn đạt của giảng viên": liệt kê NGUYÊN VĂN theo ngôn ngữ gốc các thuật ngữ, cụm từ, cách đặt
+  câu hỏi, cách viết bước giải và kết luận mà tài liệu dùng, kể cả khi khác cách dùng phổ biến. Không dịch các cụm này.
+- Bỏ lời dẫn, trang trí, nội dung lặp lại. Phần giải thích viết cô đọng bằng tiếng Việt.
 CHỈ trả về nội dung Markdown của bản ghi nhớ.""",
     "sample": """Dùng công cụ Read đọc file {name} trong thư mục hiện tại. Đây là một đề kiểm tra mẫu.
 Mở đầu bằng một đoạn ngắn mô tả: cấu trúc đề, số câu từng dạng, độ khó, cách hỏi, thang điểm.
 Sau đó chép lại NGUYÊN VĂN toàn bộ câu hỏi (kể cả phương án và số liệu), công thức viết bằng LaTeX gọn trong $...$.
+Cuối cùng có mục "Văn phong đề": thuật ngữ đặc trưng (nguyên văn), cách đặt câu hỏi, khuôn mẫu phương án, có cho sẵn giá trị
+tra bảng hay không, dữ liệu dạng bảng hay không, bối cảnh thực tế, dấu thập phân của đáp số.
 CHỈ trả về nội dung Markdown.""",
 }
 
@@ -229,7 +258,21 @@ def check_generated(data, mode):
     for q in qs:
         if q.get("type") == "mcq" and not (isinstance(q.get("answer"), int) and 0 <= q["answer"] < len(q.get("options", []))):
             raise ValueError("Claude trả về câu trắc nghiệm không hợp lệ, hãy thử lại")
+        if q.get("type") == "numeric":
+            try:
+                q["answer"] = float(q["answer"])
+                q["tolerance"] = abs(float(q.get("tolerance") or 0)) or max(0.001, abs(q["answer"]) * 0.005)
+            except (KeyError, TypeError, ValueError):
+                raise ValueError("Claude trả về câu điền đáp số không hợp lệ, hãy thử lại")
     return data
+
+
+def parse_number(s):
+    """Đáp số người làm bài gõ: chấp nhận "4,183" (dấu phẩy thập phân như Moodle), "4.183", "-34.66", "1 250,5"."""
+    s = str(s).strip().replace(" ", "")
+    if "," in s and "." in s:  # 1.250,5 hoặc 1,250.5: dấu đứng sau là dấu thập phân
+        s = s.replace(".", "").replace(",", ".") if s.rfind(",") > s.rfind(".") else s.replace(",", "")
+    return float(s.replace(",", "."))
 
 
 def grade(questions, answers):
@@ -241,6 +284,12 @@ def grade(questions, answers):
         a = answers[i] if i < len(answers) else None
         if q["type"] == "mcq":
             ok = a == q["answer"]
+            results[i] = {"score": per_q if ok else 0, "correct": ok, "feedback": q.get("explanation", "")}
+        elif q["type"] == "numeric":  # chấm ngay trên máy, không tốn lượt Claude
+            try:
+                ok = abs(parse_number(a) - q["answer"]) <= q["tolerance"]
+            except (TypeError, ValueError):
+                ok = False
             results[i] = {"score": per_q if ok else 0, "correct": ok, "feedback": q.get("explanation", "")}
         elif not (isinstance(a, str) and a.strip()):
             results[i] = {"score": 0, "feedback": "Không trả lời."}
@@ -272,12 +321,15 @@ def export_doc(exam, with_key):
         body.append(f"<p><b>Câu {i}.</b> {e(q['question'])}</p>")
         if q["type"] == "mcq":
             body += [f"<p style='margin-left:24px'>{'ABCDEFGH'[j]}. {e(o)}</p>" for j, o in enumerate(q["options"])]
+        elif q["type"] == "numeric":
+            body.append("<p>Answer: ....................</p>")
         else:
             body.append("<p>" + "." * 400 + "</p>")
     if with_key:
         body.append("<br style='page-break-before:always'><h2>Đáp án</h2>")
         for i, q in enumerate(qs, 1):
-            ans = "ABCDEFGH"[q["answer"]] if q["type"] == "mcq" else q.get("sample_answer", "")
+            ans = ("ABCDEFGH"[q["answer"]] if q["type"] == "mcq" else f"{q['answer']:g} (sai số ±{q['tolerance']:g})"
+                   if q["type"] == "numeric" else q.get("sample_answer", ""))
             body.append(f"<p><b>Câu {i}:</b> {e(ans)}<br><i>{e(q.get('explanation') or q.get('rubric') or '')}</i></p>")
     return ("<html><head><meta charset='utf-8'></head><body style='font-family:Times New Roman;font-size:13pt'>"
             + "".join(body) + "</body></html>").encode("utf-8")
@@ -487,9 +539,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Thiếu file hoặc loại tài liệu không hợp lệ")
             # "file" là tên file thật (có đuôi để biết loại), "name" là tên hiển thị như "Lec 6. HYPOTHESIS TESTING"
             digest = digest_doc({"name": b.get("file") or b.get("name", ""), "data": b["data"]}, kind)
+            name = re.sub(r"[\x00-\x1f]", "", b.get("name", "")).strip()[:200]  # tên lấy từ bookmark PDF có thể chứa ký tự rác
             with db() as c:
                 doc_id = c.execute("INSERT INTO docs(subject_id,kind,name,pages,digest) VALUES(?,?,?,?,?)",
-                                   (id_, kind, b.get("name", "")[:200], b.get("pages"), digest)).lastrowid
+                                   (id_, kind, name, b.get("pages"), digest)).lastrowid
             return self.send(200, {"id": doc_id})
         if action == "generate":
             n, minutes, qtype, notes, mode = self.gen_params(b)
