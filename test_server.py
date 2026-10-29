@@ -27,6 +27,10 @@ b64 = lambda s: base64.b64encode(s.encode()).decode()
 for mode in ("both", "exam"):
     server.generate_exam([{"name": "a.txt", "data": b64("tài liệu")}], [{"name": "mau.pdf", "data": b64("%PDF")}], 5, "mcq", "", mode)
     assert "de_mau_0.pdf" in seen["files"] and "de_mau_0.pdf" in seen["prompt"] and "bắt chước phong cách" in seen["prompt"], mode
+server.generate_exam([{"name": "l6.pdf", "data": b64("%PDF 6")}, {"name": "l7.pdf", "data": b64("%PDF 7")},
+                      {"name": "note.txt", "data": b64("ghi chú")}], [], 5, "mcq", "", "exam")
+assert {"tai_lieu_0.pdf", "tai_lieu_1.pdf", "tai_lieu_2.txt"} <= set(seen["files"])
+assert "tai_lieu_0.pdf, tai_lieu_1.pdf, tai_lieu_2.txt" in seen["prompt"]
 d = server.generate_exam([{"name": "a.txt", "data": b64("x")}], [], 5, "mcq", "", "lesson")
 assert d["questions"] == [] and "KHÔNG tạo câu hỏi" in seen["prompt"]
 server.ask_claude = real_claude

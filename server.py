@@ -9,7 +9,7 @@ from urllib.parse import urlparse, parse_qs
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(ROOT, "data.db")
 PORT = int(os.environ.get("PORT", 8000))
-MAX_UPLOAD = 30 * 1024 * 1024  # tổng dung lượng request (base64)
+MAX_UPLOAD = 100 * 1024 * 1024  # tổng request; base64 làm file to thêm ~1/3 nên ứng với ~70MB file (MAX_MB ở index.html)
 
 
 # ---------- Database ----------
@@ -234,7 +234,7 @@ class Handler(BaseHTTPRequestHandler):
     def body(self):
         n = int(self.headers.get("Content-Length") or 0)
         if n > MAX_UPLOAD:
-            raise ValueError("File quá lớn (tối đa khoảng 20MB)")
+            raise ValueError("Tổng dung lượng file quá lớn (tối đa khoảng 70MB)")
         return json.loads(self.rfile.read(n) or b"{}")
 
     def user(self):

@@ -124,11 +124,18 @@ input, select, textarea {
 input:focus, select:focus, textarea:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
 textarea { min-height: 84px; resize: vertical; }
 select option { background: var(--paper); color: var(--ink); }
-input[type=file] { padding: 14px 12px; border-style: dashed; cursor: pointer; }
-input[type=file]::file-selector-button {
-  font: inherit; font-weight: 500; margin-right: 12px; padding: 6px 12px; border-radius: 6px;
-  border: 1px solid var(--line); background: var(--bg); color: var(--ink); cursor: pointer;
-}
+/* ô chọn file: thêm dần nhiều lần, kéo thả được, xoá từng file */
+.drop { border: 1.5px dashed var(--line); border-radius: 6px; padding: 12px; }
+.drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.drop-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--muted); font-size: 14px; }
+.drop-bar button { padding: 6px 12px; background: var(--bg); }
+.drop input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.files { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 4px; }
+.files:empty { display: none; }
+.files li { display: flex; align-items: center; gap: 10px; padding: 6px 4px 6px 10px; border-radius: 6px; background: var(--bg); font-size: 15px; }
+.files .fname { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.files .fsize { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.files button { padding: 2px 8px; border: 0; background: none; color: var(--red); font-size: 18px; line-height: 1; }
 .row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 14px; }
 @media (max-width: 560px) { .row { grid-template-columns: 1fr 1fr; } .sheet { padding: 22px 18px 22px 40px; } .sheet::before { left: 24px; } }
 
@@ -270,7 +277,39 @@ async function api(path, opts = {}) {
   return data;
 }
 
-const readFiles = input => Promise.all([...input.files].map(f => new Promise((ok, fail) => {
+// ---------- Ô chọn nhiều file: mỗi lần chọn được cộng thêm vào danh sách ----------
+const MAX_MB = 70;  // khớp MAX_UPLOAD của server (base64 làm to thêm ~1/3)
+const picked = { docs: [], samples: [] };
+const fmtSize = b => b < 1048576 ? `${Math.max(1, Math.round(b / 1024))} KB` : `${(b / 1048576).toFixed(1)} MB`;
+const dropBox = (key, label) => `<div class="drop" id="${key}Drop">
+  <input id="${key}" type="file" multiple accept=".pdf,.docx,.txt,.md" tabindex="-1" aria-hidden="true">
+  <div class="drop-bar"><button type="button" onclick="$('#${key}').click()">Thêm file</button>
+    <span>hoặc kéo thả ${label} vào đây</span></div>
+  <ul class="files" id="${key}List" aria-label="${label} đã chọn"></ul></div>`;
+
+function addFiles(key, files) {
+  const ok = /\.(pdf|docx|txt|md)$/i;
+  for (const f of files) {
+    if (!ok.test(f.name)) { $("#err").textContent = `Bỏ qua ${f.name}: chỉ nhận PDF, DOCX, TXT, MD.`; continue; }
+    if (!picked[key].some(x => x.name === f.name && x.size === f.size)) picked[key].push(f);
+  }
+  showFiles(key);
+}
+function showFiles(key) {
+  $(`#${key}List`).innerHTML = picked[key].map((f, i) => `<li><span class="fname">${esc(f.name)}</span>
+    <span class="fsize">${fmtSize(f.size)}</span>
+    <button type="button" onclick="picked.${key}.splice(${i},1);showFiles('${key}')" aria-label="Bỏ file ${esc(f.name)}">✕</button></li>`).join("");
+}
+function wirePicker(key) {
+  const box = $(`#${key}Drop`), input = $(`#${key}`);
+  input.onchange = () => { addFiles(key, input.files); input.value = ""; };
+  box.ondragover = e => { e.preventDefault(); box.classList.add("over"); };
+  box.ondragleave = () => box.classList.remove("over");
+  box.ondrop = e => { e.preventDefault(); box.classList.remove("over"); addFiles(key, e.dataTransfer.files); };
+  showFiles(key);
+}
+
+const readFiles = files => Promise.all([...files].map(f => new Promise((ok, fail) => {
   const fr = new FileReader();
   fr.onload = () => ok({ name: f.name, data: fr.result.split(",")[1] });
   fr.onerror = fail;
@@ -331,11 +370,11 @@ async function renderCreate() {
     <div class="label" id="modeLbl">Bạn cần gì?</div>
     <div class="modes" role="radiogroup" aria-labelledby="modeLbl">${Object.entries(MODES).map(([k, v], i) =>
       `<label><input type="radio" name="mode" value="${k}" ${i ? "" : "checked"}><span>${v}</span></label>`).join("")}</div>
-    <label for="docs">Tài liệu học <span class="hint">(PDF, DOCX, TXT, MD, chọn được nhiều file)</span></label>
-    <input id="docs" type="file" multiple accept=".pdf,.docx,.txt,.md" required>
+    <div class="label">Tài liệu học <span class="hint">(PDF, DOCX, TXT, MD; thêm bao nhiêu file cũng được)</span></div>
+    ${dropBox("docs", "tài liệu")}
     <div class="exam-only">
-      <label for="samples">Đề mẫu <span class="hint">(không bắt buộc, Claude sẽ ra đề theo phong cách này)</span></label>
-      <input id="samples" type="file" multiple accept=".pdf,.docx,.txt,.md">
+      <div class="label">Đề mẫu <span class="hint">(không bắt buộc, Claude sẽ ra đề theo phong cách này)</span></div>
+      ${dropBox("samples", "đề mẫu")}
       <div class="row">
         <div><label for="n">Số câu</label><input id="n" type="number" min="1" max="100" value="10" required></div>
         <div><label for="t">Thời gian (phút)</label><input id="t" type="number" min="1" max="300" value="15" required></div>
@@ -352,6 +391,7 @@ async function renderCreate() {
   afterRender();
 
   const form = $("#gen");
+  wirePicker("docs"); wirePicker("samples");
   const mode = () => form.querySelector("[name=mode]:checked").value;
   form.querySelectorAll("[name=mode]").forEach(r => r.onchange = () => {
     form.querySelector(".exam-only").classList.toggle("hidden", mode() === "lesson");
@@ -360,14 +400,19 @@ async function renderCreate() {
 
   form.onsubmit = async e => {
     e.preventDefault();
+    const samples = mode() === "lesson" ? [] : picked.samples;
+    const total = [...picked.docs, ...samples].reduce((s, f) => s + f.size, 0);
+    if (!picked.docs.length) { $("#err").textContent = "Thêm ít nhất một file tài liệu học."; return; }
+    if (total > MAX_MB * 1048576) { $("#err").textContent = `Tổng dung lượng ${fmtSize(total)} vượt giới hạn ${MAX_MB} MB. Bỏ bớt file hoặc tách lấy phần cần học.`; return; }
     const btn = $("#genBtn"), wait = $("#wait"), started = Date.now();
     btn.disabled = true; wait.classList.remove("hidden"); $("#err").textContent = "";
     const tick = () => wait.textContent = `Claude đang đọc tài liệu và soạn bài (${Math.round((Date.now() - started) / 1000)} giây). Thường mất 1–5 phút, đừng đóng trang.`;
     tick(); const iv = setInterval(tick, 1000);
     try {
       const r = await api("/api/exams", { method: "POST", body: {
-        mode: mode(), docs: await readFiles($("#docs")), samples: mode() === "lesson" ? [] : await readFiles($("#samples")),
+        mode: mode(), docs: await readFiles(picked.docs), samples: await readFiles(samples),
         n_questions: +$("#n").value, duration_min: +$("#t").value, qtype: $("#qt").value, notes: $("#notes").value } });
+      picked.docs = []; picked.samples = [];
       location.hash = `#/lesson/${r.id}`;
     } catch (x) { $("#err").textContent = x.message; btn.disabled = false; wait.classList.add("hidden"); }
     finally { clearInterval(iv); }
