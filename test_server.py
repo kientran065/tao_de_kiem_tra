@@ -69,6 +69,26 @@ assert a["score"] == 10
 assert call(f"/api/attempts/{r['id']}", cookie=bob)[0] == 400
 assert len(call("/api/attempts", cookie=alice)[1]) == 1 and call("/api/attempts", cookie=bob)[1] == []
 
+# tạo đề lần 2 từ cùng tài liệu: câu của đề trước được đưa vào prompt để tránh lặp
+made = []
+def fake_unique(prompt, cwd):
+    made.append(prompt)
+    return json.dumps({"title": "T", "lesson": "", "questions": [
+        {"type": "mcq", "question": f"Câu số {len(made)}", "options": ["a", "b"], "answer": 0}]})
+server.ask_claude = fake_unique
+gen = lambda name, text, who: call("/api/exams", {"mode": "exam", "n_questions": 1, "duration_min": 5,
+                                                   "docs": [{"name": name, "data": b64(text)}]}, who)
+assert gen("slide.pdf", "tài liệu A", alice)[0] == 200 and "ĐÃ CÓ" not in made[-1]
+gen("doi_ten.pdf", "tài liệu A", alice)  # cùng nội dung, khác tên file
+assert "- Câu số 1" in made[-1]
+gen("slide.pdf", "tài liệu A", alice)
+assert "- Câu số 1" in made[-1] and "- Câu số 2" in made[-1]
+gen("khac.pdf", "tài liệu B", alice)  # tài liệu khác: không tránh
+assert "ĐÃ CÓ" not in made[-1]
+gen("slide.pdf", "tài liệu A", bob)  # người khác: không thấy đề của alice
+assert "ĐÃ CÓ" not in made[-1]
+server.ask_claude = real_claude
+
 # mục chỉ có bài giảng: không làm bài, không tải đề được
 with server.db() as c:
     lid = c.execute("INSERT INTO exams(user_id,title,duration_min,lesson,questions) VALUES(?,?,?,?,?)",

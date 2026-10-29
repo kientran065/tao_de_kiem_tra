@@ -29,10 +29,20 @@ def init_db():
         CREATE TABLE IF NOT EXISTS attempts(id INTEGER PRIMARY KEY, exam_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
             answers TEXT, result TEXT, score REAL, created TEXT DEFAULT (datetime('now','localtime')));
         """)
+        try:  # cột thêm sau: dấu vân tay tài liệu, để nhận ra các đề tạo từ cùng tài liệu
+            c.execute("ALTER TABLE exams ADD COLUMN docs_hash TEXT")
+        except sqlite3.OperationalError:
+            pass  # đã có cột
 
 
 def hash_pw(pw, salt):
     return hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(salt), 200_000).hex()
+
+
+def docs_fingerprint(docs):
+    """Cùng bộ file tài liệu (không phụ thuộc tên file hay thứ tự chọn) cho cùng một mã."""
+    parts = sorted(hashlib.sha256(base64.b64decode(f["data"])).hexdigest() for f in docs)
+    return hashlib.sha256("".join(parts).encode()).hexdigest()
 
 
 # ---------- Claude ----------
@@ -108,10 +118,16 @@ def save_uploads(files, folder, prefix):
     return names
 
 
-def generate_exam(docs, samples, n_questions, qtype, notes, mode="both"):
-    """mode: "both" (bài giảng + đề), "exam" (chỉ đề), "lesson" (chỉ bài giảng)."""
+def generate_exam(docs, samples, n_questions, qtype, notes, mode="both", avoid=()):
+    """mode: "both" (bài giảng + đề), "exam" (chỉ đề), "lesson" (chỉ bài giảng).
+    avoid: câu hỏi của các đề trước tạo từ cùng tài liệu, không được lặp lại."""
     lesson_task = ("Viết một bài giảng tiếng Việt (Markdown) dễ hiểu, có cấu trúc, tóm tắt và giải thích nội dung chính của tài liệu."
                    if mode != "exam" else 'KHÔNG viết bài giảng: để "lesson" là chuỗi rỗng "".')
+    avoid_task = ("""
+Các câu hỏi dưới đây ĐÃ CÓ trong những đề trước tạo từ cùng tài liệu này. KHÔNG được lặp lại chúng:
+không hỏi lại nguyên văn hay diễn đạt lại cùng một câu, câu tính toán không dùng lại bộ số liệu cũ.
+Ưu tiên những ý kiến thức trong tài liệu mà các câu này chưa hỏi tới.
+""" + "\n".join(f"- {q}" for q in avoid)) if avoid and mode != "lesson" else ""
     with tempfile.TemporaryDirectory() as tmp:
         doc_names = save_uploads(docs, tmp, "tai_lieu_")
         sample_names = save_uploads(samples, tmp, "de_mau_")
@@ -126,6 +142,7 @@ Nhiệm vụ:
 2. {f'''Tạo đúng {n_questions} câu hỏi kiểm tra, {types}, bám sát nội dung tài liệu.
    Nếu có đề mẫu, bắt chước phong cách, độ khó và cách hỏi của đề mẫu.''' if mode != "lesson" else 'KHÔNG tạo câu hỏi: để "questions" là mảng rỗng [].'}
 {("Yêu cầu thêm của người dùng: " + notes) if notes else ""}
+{avoid_task}
 
 CHỈ trả về một đối tượng JSON hợp lệ, không kèm chữ nào khác, theo đúng cấu trúc:
 {{"title": "tên đề", "lesson": "bài giảng markdown",
@@ -326,11 +343,17 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Lựa chọn không hợp lệ")
             if not (1 <= n <= 100 and 1 <= minutes <= 300):
                 raise ValueError("Số câu 1-100, thời gian 1-300 phút")
-            data = generate_exam(b["docs"], b.get("samples", []), n, b.get("qtype", "mcq"), b.get("notes", "").strip(), mode)
+            fp = docs_fingerprint(b["docs"])
             with db() as c:
-                cur = c.execute("INSERT INTO exams(user_id,title,duration_min,lesson,questions) VALUES(?,?,?,?,?)",
+                rows = c.execute("SELECT questions FROM exams WHERE user_id=? AND docs_hash=? ORDER BY id DESC",
+                                 (u["id"], fp)).fetchall()
+            # shortcut: chỉ gửi 150 câu gần nhất cho prompt khỏi quá dài; cần hơn thì tóm tắt theo chủ đề
+            avoid = [q["question"] for r in rows for q in json.loads(r["questions"])][:150]
+            data = generate_exam(b["docs"], b.get("samples", []), n, b.get("qtype", "mcq"), b.get("notes", "").strip(), mode, avoid)
+            with db() as c:
+                cur = c.execute("INSERT INTO exams(user_id,title,duration_min,lesson,questions,docs_hash) VALUES(?,?,?,?,?,?)",
                                 (u["id"], data.get("title", "Đề kiểm tra"), minutes, data.get("lesson", ""),
-                                 json.dumps(data["questions"], ensure_ascii=False)))
+                                 json.dumps(data["questions"], ensure_ascii=False), fp))
             return self.send(200, {"id": cur.lastrowid})
         if action == "submit":
             e = self.get_exam(u, id_)
